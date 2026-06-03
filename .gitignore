@@ -1,11 +1,8 @@
-# Python
 __pycache__/
 *.py[cod]
 *.so
-.Python
 .venv/
 venv/
-env/
 *.egg-info/
 dist/
 build/
@@ -14,21 +11,45 @@ build/
 .pytest_cache/
 htmlcov/
 .coverage
-
-# Environment
 .env
 .env.*
 !.env.example
-
-# IDE
 .idea/
 .vscode/
 *.swp
-
-# Docker
 *.log
-
-# OS
 .DS_Store
 Thumbs.db
-EOF
+"@ | Out-File -FilePath .gitignore -Encoding utf8
+
+git add .
+git commit -m "chore: initial project setup"
+git checkout -b develop
+Linux (деплой/CI):
+
+mkdir neomarket && cd neomarket
+git init
+
+cat > .gitignore << 'EOF'
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.swp
+*.log
+.DS_Store
+Thumbs.db
