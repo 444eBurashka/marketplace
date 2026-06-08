@@ -9,7 +9,11 @@ from alembic import context
 from app.db.base import Base
 from app.core.config import settings
 import app.db  # noqa: F401
+import sys
 
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 config = context.config
 
 if config.config_file_name is not None:
