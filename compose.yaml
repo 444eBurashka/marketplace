@@ -22,7 +22,9 @@ services:
       - marketplace
 
   b2b_app:
-    build: ./b2b
+    build:
+      context: .
+      dockerfile: b2b/Dockerfile
     container_name: b2b_app
     env_file: .env
     environment:
@@ -62,7 +64,9 @@ services:
       - marketplace
 
   b2c_app:
-    build: ./b2c
+    build:
+      context: .
+      dockerfile: b2c/Dockerfile
     container_name: b2c_app
     env_file: .env
     environment:
@@ -103,7 +107,9 @@ services:
       - marketplace
 
   moderation_app:
-    build: ./moderation
+    build:
+      context: .
+      dockerfile: moderation/Dockerfile
     container_name: moderation_app
     env_file: .env
     environment:
