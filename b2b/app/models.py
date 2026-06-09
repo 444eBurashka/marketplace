@@ -195,22 +195,29 @@ class SKU(Base):
         nullable=False,
         index=True,
     )
-    code: Mapped[str] = mapped_column(sa.String(100), nullable=False)
+    name: Mapped[str] = mapped_column(sa.String(255), nullable=False)
+    article: Mapped[str | None] = mapped_column(sa.String(255), nullable=True)
     # Цена в копейках: 10000 = 100.00 руб.
     price: Mapped[int] = mapped_column(sa.Integer, nullable=False)
+    discount: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False)
     cost_price: Mapped[int] = mapped_column(sa.Integer, nullable=False)  # скрыт от B2C
     quantity: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False)
     reserved_quantity: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False)
     is_active: Mapped[bool] = mapped_column(sa.Boolean, default=True, nullable=False)
 
     __table_args__ = (
-        sa.CheckConstraint("price >= 0", name="ck_skus_price_non_negative"),
-        sa.CheckConstraint("cost_price >= 0", name="ck_skus_cost_price_non_negative"),
+        sa.CheckConstraint("price > 0", name="ck_skus_price_positive"),
+        sa.CheckConstraint("cost_price > 0", name="ck_skus_cost_price_positive"),
+        sa.CheckConstraint("discount >= 0", name="ck_skus_discount_non_negative"),
         sa.CheckConstraint("quantity >= 0", name="ck_skus_quantity_non_negative"),
         sa.CheckConstraint(
             "reserved_quantity >= 0", name="ck_skus_reserved_quantity_non_negative"
         ),
     )
+
+    @property
+    def active_quantity(self) -> int:
+        return self.quantity - self.reserved_quantity
 
     # relationships
     product: Mapped["Product"] = relationship(back_populates="skus")
@@ -226,10 +233,19 @@ class SKU(Base):
         back_populates="sku"
     )
 
-    @property
-    def available_quantity(self) -> int:
-        """Доступное к резервированию количество."""
-        return self.quantity - self.reserved_quantity
+    # relationships
+    product: Mapped["Product"] = relationship(back_populates="skus")
+    attributes: Mapped[list["SKUAttribute"]] = relationship(
+        back_populates="sku", cascade="all, delete-orphan"
+    )
+    images: Mapped[list["Image"]] = relationship(
+        primaryjoin="and_(Image.entity_type == 'sku', "
+                    "foreign(Image.entity_id) == SKU.id)",
+        viewonly=True,
+    )
+    reservation_items: Mapped[list["ReservationItem"]] = relationship(
+        back_populates="sku"
+    )
 
 
 class SKUAttribute(Base):
