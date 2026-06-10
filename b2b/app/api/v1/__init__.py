@@ -1,8 +1,8 @@
 from fastapi import APIRouter
-from app.api.v1 import (
-    auth, sellers, categories, products,
-    skus, invoices, images, catalog, inventory, moderation_events
-)
+import app.api.v1.auth as auth
+import app.api.v1.sellers as sellers
+
+
 
 api_router = APIRouter()
 
