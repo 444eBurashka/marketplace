@@ -26,24 +26,23 @@ async def _send_moderation_event(
 ) -> None:
     """Fire-and-forget POST в Moderation. Ошибка не прерывает создание SKU."""
     payload = {
-        "idempotency_key": str(idempotency_key),
-        "product_id": str(product.id),
-        "seller_id": str(product.seller_id),
-        "event": event_type,
-        "date": datetime.now(UTC).isoformat(),
+        "event_type": event_type,
+        "occurred_at": datetime.now(UTC).isoformat(),
+        "payload": {
+            "idempotency_key": str(idempotency_key),
+            "product_id": str(product.id),
+            "seller_id": str(product.seller_id),
+        },
     }
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             await client.post(
-                f"{settings.moderation_internal_url}/api/v1/events/product",
+                f"{settings.moderation_internal_url}/api/v1/b2b/events",
                 json=payload,
                 headers={"X-Service-Key": settings.service_key},
             )
     except Exception:
-        # Moderation недоступна — не роняем запрос продавца.
-        # В production здесь был бы outbox, пока логируем молча.
         pass
-
 
 async def create_sku(
     body: SKUCreateRequest,
