@@ -19,18 +19,38 @@ from app.schemas.skus import SKUResponse
 _MODERATION_TRIGGER_STATUSES = {ProductStatus.MODERATED, ProductStatus.BLOCKED}
 
 
+def _product_snapshot(product: Product) -> dict:
+    """Снапшот товара для json_before / json_after."""
+    return {
+        "id": str(product.id),
+        "seller_id": str(product.seller_id),
+        "category_id": str(product.category_id) if product.category_id else None,
+        "title": product.title,
+        "slug": product.slug,
+        "description": product.description,
+        "status": product.status.value,
+        "deleted": product.deleted,
+        "blocking_reason_id": str(product.blocking_reason_id) if product.blocking_reason_id else None,
+    }
+
+
 async def _send_moderation_event(
     product: Product,
     idempotency_key: uuid.UUID,
+    json_before: dict,
+    json_after: dict,
 ) -> None:
     """Fire-and-forget POST в Moderation."""
     payload = {
-        "event_type": "EDITED",
+        "idempotency_key": str(idempotency_key),           # верхний уровень
+        "event_type": "PRODUCT_EDITED",                    # enum из moderation/openapi.yaml
         "occurred_at": datetime.now(UTC).isoformat(),
         "payload": {
-            "idempotency_key": str(idempotency_key),
             "product_id": str(product.id),
             "seller_id": str(product.seller_id),
+            "category_id": str(product.category_id) if product.category_id else None,
+            "json_before": json_before,                    # снапшот ДО изменений
+            "json_after": json_after,                      # снапшот ПОСЛЕ изменений
         },
     }
     try:
@@ -73,6 +93,9 @@ async def patch_product(
     if product.status == ProductStatus.HARD_BLOCKED:
         raise PermissionError("HARD_BLOCKED")
 
+    # Снапшот ДО изменений — собираем здесь, до любых мутаций
+    json_before = _product_snapshot(product)
+
     # Применяем изменения полей
     if body.title is not None:
         product.title = body.title
@@ -82,7 +105,6 @@ async def patch_product(
         product.category_id = body.category_id
 
     if body.images is not None:
-        # Удаляем старые изображения товара и добавляем новые
         old_images = await db.execute(
             select(Image).where(
                 Image.entity_type == ImageEntityType.PRODUCT,
@@ -113,7 +135,9 @@ async def patch_product(
     if product.status in _MODERATION_TRIGGER_STATUSES:
         product.status = ProductStatus.ON_MODERATION
         await db.flush()
-        await _send_moderation_event(product, uuid.uuid4())
+        # Снапшот ПОСЛЕ изменений — статус уже ON_MODERATION
+        json_after = _product_snapshot(product)
+        await _send_moderation_event(product, uuid.uuid4(), json_before, json_after)
     else:
         await db.flush()
 
@@ -149,7 +173,10 @@ async def patch_sku(
     if product.status == ProductStatus.HARD_BLOCKED:
         raise PermissionError("HARD_BLOCKED")
 
-    # Применяем изменения (reserved_quantity не трогаем — это ключевое требование)
+    # Снапшот ДО изменений — собираем до мутаций
+    json_before = _product_snapshot(product)
+
+    # Применяем изменения (reserved_quantity не трогаем — ключевое требование)
     if body.name is not None:
         sku.name = body.name
     if body.price is not None:
@@ -171,12 +198,13 @@ async def patch_sku(
     if product.status in _MODERATION_TRIGGER_STATUSES:
         product.status = ProductStatus.ON_MODERATION
         await db.flush()
-        await _send_moderation_event(product, uuid.uuid4())
+        # Снапшот ПОСЛЕ изменений — статус уже ON_MODERATION
+        json_after = _product_snapshot(product)
+        await _send_moderation_event(product, uuid.uuid4(), json_before, json_after)
     else:
         await db.flush()
 
     await db.refresh(sku)
-    # Перезагружаем с relationships
     result2 = await db.execute(
         select(SKU)
         .where(SKU.id == sku.id)

@@ -3,6 +3,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from b2b.app.schemas.skus import SKUResponse
+
 
 # ─── Вложенные схемы ────────────────────────────────────────────────────────
 
@@ -96,6 +98,6 @@ class ProductResponse(BaseModel):
     moderator_comment: str | None = None
     images: list[ImageOut]
     characteristics: list[CharacteristicOut]
-    skus: list[SKUOut]
+    skus: list[SKUResponse]
     created_at: datetime
     updated_at: datetime

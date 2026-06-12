@@ -30,6 +30,7 @@ async def _send_moderation_event(
         "occurred_at": datetime.now(UTC).isoformat(),
         "payload": {
             "idempotency_key": str(idempotency_key),
+            "category_id": str(product.category_id) if product.category_id else None,
             "product_id": str(product.id),
             "seller_id": str(product.seller_id),
         },
