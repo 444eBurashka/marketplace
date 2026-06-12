@@ -24,14 +24,21 @@ async def _send_moderation_event(
     event_type: str,
     idempotency_key: uuid.UUID,
 ) -> None:
-    """Fire-and-forget POST в Moderation. Ошибка не прерывает создание SKU."""
     payload = {
+        "idempotency_key": str(idempotency_key),
         "event_type": event_type,
         "occurred_at": datetime.now(UTC).isoformat(),
         "payload": {
-            "idempotency_key": str(idempotency_key),
             "product_id": str(product.id),
             "seller_id": str(product.seller_id),
+            "json_after": {
+                "id": str(product.id),
+                "seller_id": str(product.seller_id),
+                "category_id": str(product.category_id) if product.category_id else None,
+                "title": product.title,
+                "description": product.description,
+                "status": product.status.value,
+            },
         },
     }
     try:
@@ -43,6 +50,7 @@ async def _send_moderation_event(
             )
     except Exception:
         pass
+
 
 async def create_sku(
     body: SKUCreateRequest,
@@ -105,7 +113,7 @@ async def create_sku(
     is_first_sku = len(product.skus) == 1  # flush уже добавил sku в коллекцию
 
     if product.status in _TRANSITION_STATUSES:
-        event_type = "CREATED" if product.status == ProductStatus.CREATED else "EDITED"
+        event_type = "PRODUCT_CREATED" if product.status == ProductStatus.CREATED else "PRODUCT_EDITED"
         product.status = ProductStatus.ON_MODERATION
         await db.flush()
         await _send_moderation_event(product, event_type, idempotency_key)
