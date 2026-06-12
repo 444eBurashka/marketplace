@@ -1,7 +1,7 @@
 import re
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,7 +12,6 @@ from app.schemas.products import ProductCreateRequest
 def _slugify(text: str) -> str:
     """Генерирует slug из произвольного текста."""
     text = text.lower().strip()
-    # Транслитерация базовых русских символов
     translit = {
         "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
         "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
@@ -36,6 +35,20 @@ async def _ensure_unique_slug(slug: str, db: AsyncSession) -> str:
             return slug
         slug = f"{base}-{counter}"
         counter += 1
+
+
+def _load_product_query(product_id: uuid.UUID):
+    """Общий select с нужными selectinload для сериализации."""
+    return (
+        select(Product)
+        .where(Product.id == product_id, Product.deleted == False)  # noqa: E712
+        .options(
+            selectinload(Product.images),
+            selectinload(Product.characteristics),
+            selectinload(Product.skus).selectinload(SKU.images),
+            selectinload(Product.skus).selectinload(SKU.attributes),
+        )
+    )
 
 
 async def create_product(
@@ -68,7 +81,7 @@ async def create_product(
         blocked=False,
     )
     db.add(product)
-    await db.flush()  # получаем product.id
+    await db.flush()
 
     # 4. Изображения
     for img in body.images:
@@ -89,15 +102,20 @@ async def create_product(
 
     await db.flush()
 
-    # 6. Перезагружаем с relationship-ами для сериализации
-    result = await db.execute(
-        select(Product)
-        .where(Product.id == product.id)
-        .options(
-            selectinload(Product.images),
-            selectinload(Product.characteristics),
-            selectinload(Product.skus),
-        )
-    )
+    result = await db.execute(_load_product_query(product.id))
     return result.scalar_one()
 
+
+async def get_product(
+    product_id: uuid.UUID,
+    seller_id: uuid.UUID,
+    db: AsyncSession,
+) -> Product:
+    result = await db.execute(_load_product_query(product_id))
+    product = result.scalar_one_or_none()
+
+    # Чужой товар и несуществующий — оба 404 (не раскрываем факт существования)
+    if product is None or product.seller_id != seller_id:
+        raise LookupError("Product not found")
+
+    return product
