@@ -123,7 +123,7 @@ async def test_first_sku_emits_created_event_to_moderation(
     assert response.status_code == 201
     mock_send.assert_called_once()
     call_kwargs = mock_send.call_args
-    assert call_kwargs.args[1] == "CREATED"  # event_type
+    assert call_kwargs.args[1] == "PRODUCT_CREATED"  # event_type
 
 
 @pytest.mark.asyncio
