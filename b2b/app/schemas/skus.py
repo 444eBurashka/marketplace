@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.schemas.products import CharacteristicOut, ImageOut
+from app.schemas.common import CharacteristicOut, ImageOut  # ← теперь из common
 
 
 # ─── Request ─────────────────────────────────────────────────────────────────

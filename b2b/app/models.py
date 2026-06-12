@@ -151,6 +151,7 @@ class Product(Base):
         UUID(as_uuid=True),
         sa.ForeignKey("blocking_reasons.id", ondelete="SET NULL"),
     )
+    moderator_comment: Mapped[str | None] = mapped_column(sa.Text)
 
     # relationships
     seller: Mapped["Seller"] = relationship(back_populates="products")
@@ -218,20 +219,6 @@ class SKU(Base):
     @property
     def active_quantity(self) -> int:
         return self.quantity - self.reserved_quantity
-
-    # relationships
-    product: Mapped["Product"] = relationship(back_populates="skus")
-    attributes: Mapped[list["SKUAttribute"]] = relationship(
-        back_populates="sku", cascade="all, delete-orphan"
-    )
-    images: Mapped[list["Image"]] = relationship(
-        primaryjoin="and_(Image.entity_type == 'sku', "
-                    "foreign(Image.entity_id) == SKU.id)",
-        viewonly=True,
-    )
-    reservation_items: Mapped[list["ReservationItem"]] = relationship(
-        back_populates="sku"
-    )
 
     # relationships
     product: Mapped["Product"] = relationship(back_populates="skus")
@@ -431,3 +418,4 @@ class BlockingReason(Base):
     title: Mapped[str] = mapped_column(sa.String(255), nullable=False)
     comment: Mapped[str | None] = mapped_column(sa.Text)
     is_active: Mapped[bool] = mapped_column(sa.Boolean, default=True, nullable=False)
+    moderator_comment: Mapped[str | None] = mapped_column(sa.Text)
