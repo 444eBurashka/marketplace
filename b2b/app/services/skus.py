@@ -146,3 +146,111 @@ async def create_sku(
         created_at=sku.created_at,
         updated_at=sku.updated_at,
     )
+
+# ─── B2B-12: Удаление SKU ────────────────────────────────────────────────────
+
+async def _send_moderation_deleted_event(product: Product) -> None:
+    """Событие DELETED в Moderation (товар ушёл из очереди — нет SKU)."""
+    payload = {
+        "idempotency_key": str(uuid.uuid4()),
+        "product_id": str(product.id),
+        "seller_id": str(product.seller_id),
+        "event": "DELETED",
+        "date": datetime.now(UTC).isoformat(),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{settings.moderation_internal_url}/api/v1/events/product",
+                json=payload,
+                headers={"X-Service-Key": settings.service_key},
+            )
+    except Exception:
+        pass
+
+
+async def _send_b2c_sku_out_of_stock(product: Product, sku_id: uuid.UUID) -> None:
+    """Событие SKU_OUT_OF_STOCK в B2C (MODERATED-товар, active_quantity > 0)."""
+    payload = {
+        "idempotency_key": str(uuid.uuid4()),
+        "event": "SKU_OUT_OF_STOCK",
+        "product_id": str(product.id),
+        "sku_ids": [str(sku_id)],
+        "date": datetime.now(UTC).isoformat(),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{settings.b2c_internal_url}/api/v1/events/product",
+                json=payload,
+                headers={"X-Service-Key": settings.service_key},
+            )
+    except Exception:
+        pass
+
+
+async def delete_sku(
+    sku_id: uuid.UUID,
+    seller_id: uuid.UUID,
+    db: AsyncSession,
+) -> None:
+    """
+    Удаляет SKU. Порядок проверок строго по канону:
+    1. Найти SKU
+    2. IDOR — ownership через parent product
+    3. HARD_BLOCKED → 403
+    4. reserved_quantity > 0 → 409
+    5. Удаление + side-эффекты
+    """
+    # 1. Загружаем SKU вместе с продуктом и всеми активными SKU продукта
+    result = await db.execute(
+        select(SKU)
+        .where(SKU.id == sku_id, SKU.is_active == True)  # noqa: E712
+        .options(
+            selectinload(SKU.product).selectinload(Product.skus)
+        )
+    )
+    sku = result.scalar_one_or_none()
+
+    if sku is None:
+        raise LookupError("SKU not found")
+
+    product = sku.product
+
+    # 2. IDOR — ownership через parent product
+    if product.seller_id != seller_id:
+        raise PermissionError("NOT_OWNER")
+
+    # 3. HARD_BLOCKED → 403
+    if product.status == ProductStatus.HARD_BLOCKED:
+        raise BlockedError("Cannot delete SKU of hard-blocked product")
+
+    # 4. Активные резервы → 409
+    if sku.reserved_quantity > 0:
+        raise ConflictError("Cannot delete SKU with active reserves")
+
+    # 5. Удаление (мягкое — is_active=False)
+    active_qty_before = sku.active_quantity  # quantity - reserved_quantity
+    sku.is_active = False
+    await db.flush()
+
+    # Считаем оставшиеся активные SKU после удаления текущего
+    remaining_skus = [s for s in product.skus if s.id != sku_id and s.is_active]
+
+    # Side-эффект А: последний SKU при ON_MODERATION → CREATED + DELETED в Moderation
+    if len(remaining_skus) == 0 and product.status == ProductStatus.ON_MODERATION:
+        product.status = ProductStatus.CREATED
+        await db.flush()
+        await _send_moderation_deleted_event(product)
+
+    # Side-эффект Б: active_quantity > 0 и товар MODERATED → SKU_OUT_OF_STOCK в B2C
+    if active_qty_before > 0 and product.status == ProductStatus.MODERATED:
+        await _send_b2c_sku_out_of_stock(product, sku_id)
+
+
+class BlockedError(Exception):
+    """Товар HARD_BLOCKED — операция запрещена."""
+
+
+class ConflictError(Exception):
+    """SKU имеет активные резервы — нельзя удалить."""
