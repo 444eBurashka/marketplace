@@ -23,9 +23,9 @@ class ProductStatus(str, Enum):
 
 class InvoiceStatus(str, Enum):
     PENDING = "PENDING"
-    PROCESSING = "PROCESSING"
-    COMPLETED = "COMPLETED"
-    CANCELLED = "CANCELLED"
+    ACCEPTED = "ACCEPTED"
+    PARTIALLY_ACCEPTED = "PARTIALLY_ACCEPTED"
+    REJECTED = "REJECTED"
 
 
 class ReservationStatus(str, Enum):
@@ -198,10 +198,9 @@ class SKU(Base):
     )
     name: Mapped[str] = mapped_column(sa.String(255), nullable=False)
     article: Mapped[str | None] = mapped_column(sa.String(255), nullable=True)
-    # Цена в копейках: 10000 = 100.00 руб.
     price: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     discount: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False)
-    cost_price: Mapped[int] = mapped_column(sa.Integer, nullable=False)  # скрыт от B2C
+    cost_price: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     quantity: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False)
     reserved_quantity: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False)
     is_active: Mapped[bool] = mapped_column(sa.Boolean, default=True, nullable=False)
@@ -258,7 +257,6 @@ class Image(Base):
         sa.Enum(ImageEntityType, name="imageentitytype"),
         nullable=False,
     )
-    # NULL — изображение загружено, но ещё не прикреплено к сущности
     entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     url: Mapped[str] = mapped_column(sa.Text, nullable=False)
     ordering: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False)
@@ -282,7 +280,8 @@ class Invoice(Base):
         default=InvoiceStatus.PENDING,
         nullable=False,
     )
-    processed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+    accepted_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+    accepted_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 
     # relationships
     seller: Mapped["Seller"] = relationship(back_populates="invoices")
@@ -306,6 +305,7 @@ class InvoiceItem(Base):
         nullable=False,
     )
     quantity: Mapped[int] = mapped_column(sa.Integer, nullable=False)
+    accepted_quantity: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
 
     __table_args__ = (
         sa.CheckConstraint("quantity > 0", name="ck_invoice_items_quantity_positive"),
@@ -409,7 +409,7 @@ class ModerationEventInbox(Base):
 
 
 # ─────────────────────────────────────────────
-# BlockingReason (справочник, используется в Product)
+# BlockingReason
 # ─────────────────────────────────────────────
 
 class BlockingReason(Base):
