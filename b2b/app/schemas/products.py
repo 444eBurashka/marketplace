@@ -57,3 +57,25 @@ class ProductResponse(BaseModel):
     skus: list[SKUResponse]
     created_at: datetime
     updated_at: datetime
+
+# ─── B2B-11: Список товаров продавца ─────────────────────────────────────────
+
+class ProductListItem(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    title: str
+    slug: str
+    status: str
+    category_id: uuid.UUID | None
+    deleted: bool
+    created_at: datetime
+    min_price: int | None = None
+    cover_image: str | None = None
+
+
+class ProductListResponse(BaseModel):
+    items: list[ProductListItem]
+    total_count: int
+    limit: int
+    offset: int
