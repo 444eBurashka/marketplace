@@ -119,3 +119,88 @@ async def get_product(
         raise LookupError("Product not found")
 
     return product
+
+async def list_products(
+    seller_id: uuid.UUID,
+    db: AsyncSession,
+    *,
+    limit: int = 20,
+    offset: int = 0,
+    status: str | None = None,
+    search: str | None = None,
+    include_deleted: bool = False,
+) -> tuple[list[dict], int]:
+    """Возвращает список товаров продавца с агрегатами."""
+    from sqlalchemy import func, case
+    from app.models import SKU, Image, ImageEntityType
+
+    # Базовый фильтр — только свои товары (IDOR-защита на уровне queryset)
+    conditions = [Product.seller_id == seller_id]
+
+    if not include_deleted:
+        conditions.append(Product.deleted == False)  # noqa: E712
+
+    if status is not None:
+        try:
+            conditions.append(Product.status == ProductStatus(status))
+        except ValueError:
+            raise ValueError(f"Invalid status: {status}")
+
+    if search is not None and search.strip():
+        conditions.append(Product.title.ilike(f"%{search.strip()}%"))
+
+    # Подзапрос: min цена SKU
+    min_price_sq = (
+        select(func.min(SKU.price))
+        .where(SKU.product_id == Product.id)
+        .correlate(Product)
+        .scalar_subquery()
+    )
+
+    # Подзапрос: обложка (первое изображение с ordering=0 или наименьшим)
+    cover_sq = (
+        select(Image.url)
+        .where(
+            Image.entity_type == ImageEntityType.PRODUCT,
+            Image.entity_id == Product.id,
+        )
+        .order_by(Image.ordering)
+        .limit(1)
+        .correlate(Product)
+        .scalar_subquery()
+    )
+
+    # Считаем total
+    count_q = select(func.count()).select_from(Product).where(*conditions)
+    total = await db.scalar(count_q) or 0
+
+    # Основной запрос
+    q = (
+        select(
+            Product,
+            min_price_sq.label("min_price"),
+            cover_sq.label("cover_image"),
+        )
+        .where(*conditions)
+        .order_by(Product.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+
+    rows = (await db.execute(q)).all()
+
+    items = []
+    for product, min_price, cover_image in rows:
+        items.append({
+            "id": product.id,
+            "title": product.title,
+            "slug": product.slug,
+            "status": product.status,
+            "category_id": product.category_id,
+            "deleted": product.deleted,
+            "created_at": product.created_at,
+            "min_price": min_price,
+            "cover_image": cover_image,
+        })
+
+    return items, total
