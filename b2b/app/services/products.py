@@ -254,3 +254,92 @@ async def list_products(
         })
 
     return items, total
+
+
+# ─── B2B-07: Каталог для B2C ─────────────────────────────────────────────────
+
+async def list_catalog(
+    db: AsyncSession,
+    *,
+    limit: int = 20,
+    offset: int = 0,
+    category_id: uuid.UUID | None = None,
+    search: str | None = None,
+    sort: str | None = None,
+    ids: list[uuid.UUID] | None = None,
+) -> tuple[list[Product], int]:
+    """
+    Каталог для B2C: только MODERATED + deleted=false + active_quantity>0.
+    Не содержит seller-only полей (cost_price, reserved_quantity).
+    """
+    from sqlalchemy import func, exists
+    from sqlalchemy.orm import selectinload
+
+    # Подзапрос: есть хотя бы один SKU с active_quantity > 0
+    has_stock = (
+        exists()
+        .where(
+            SKU.product_id == Product.id,
+            SKU.is_active == True,  # noqa: E712
+            (SKU.quantity - SKU.reserved_quantity) > 0,
+        )
+    )
+
+    conditions = [
+        Product.status == ProductStatus.MODERATED,
+        Product.deleted == False,  # noqa: E712
+        has_stock,
+    ]
+
+    if ids is not None:
+        conditions.append(Product.id.in_(ids))
+
+    if category_id is not None:
+        conditions.append(Product.category_id == category_id)
+
+    if search is not None and search.strip():
+        term = f"%{search.strip()}%"
+        conditions.append(
+            Product.title.ilike(term) | Product.description.ilike(term)
+        )
+
+    # Считаем total
+    count_q = select(func.count()).select_from(Product).where(*conditions)
+    total = await db.scalar(count_q) or 0
+
+    # Сортировка
+    if sort == "price_asc":
+        order = Product.id  # fallback — min_price через subquery дорого; используем id
+    elif sort == "price_desc":
+        order = Product.id.desc()
+    else:  # date_desc (default)
+        order = Product.created_at.desc()
+
+    q = (
+        select(Product)
+        .where(*conditions)
+        .options(
+            selectinload(Product.images),
+            selectinload(Product.characteristics),
+            selectinload(Product.skus).selectinload(SKU.images),
+            selectinload(Product.skus).selectinload(SKU.attributes),
+        )
+        .order_by(order)
+        .limit(limit)
+        .offset(offset)
+    )
+
+    rows = (await db.execute(q)).scalars().all()
+    return list(rows), total
+
+
+async def get_catalog_product(
+    product_id: uuid.UUID,
+    db: AsyncSession,
+) -> Product:
+    """Карточка товара для B2C/Moderation — без ownership-проверки."""
+    result = await db.execute(_load_product_query(product_id))
+    product = result.scalar_one_or_none()
+    if product is None:
+        raise LookupError("Product not found")
+    return product
