@@ -6,8 +6,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.session import get_db
-from app.schemas.inventory import ReserveRequest, ReserveResponse, UnreserveRequest, UnreserveResponse
-from app.services.inventory import InsufficientStockError, reserve, unreserve
+from app.schemas.inventory import (
+    FulfillRequest,
+    FulfillResponse,
+    ReserveRequest,
+    ReserveResponse,
+    UnreserveRequest,
+    UnreserveResponse,
+)
+from app.services.inventory import InsufficientStockError, fulfill, reserve, unreserve
 
 router = APIRouter()
 
@@ -80,5 +87,32 @@ async def unreserve_endpoint(
     return UnreserveResponse(
         order_id=reservation.order_id,
         status="UNRESERVED",
+        processed_at=datetime.now(UTC),
+    )
+
+
+@router.post("/fulfill", response_model=FulfillResponse, status_code=status.HTTP_200_OK)
+async def fulfill_endpoint(
+    body: FulfillRequest,
+    _: ServiceKeyDep,
+    db: DB,
+) -> FulfillResponse:
+    """
+    Списание резерва при доставке (вызывается B2C при DELIVERED).
+    active_quantity НЕ меняется. Идемпотентно по order_id.
+    """
+    from datetime import UTC, datetime
+
+    try:
+        reservation = await fulfill(body, db)
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "NOT_FOUND", "message": str(exc)},
+        )
+
+    return FulfillResponse(
+        order_id=reservation.order_id,
+        status="FULFILLED",
         processed_at=datetime.now(UTC),
     )

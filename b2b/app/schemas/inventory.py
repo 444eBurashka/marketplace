@@ -45,3 +45,21 @@ class UnreserveResponse(BaseModel):
     order_id: uuid.UUID
     status: str  # UNRESERVED
     processed_at: datetime
+
+
+# ─── Fulfill ─────────────────────────────────────────────────────────────────
+
+class FulfillItem(BaseModel):
+    sku_id: uuid.UUID
+    quantity: int = Field(gt=0)
+
+
+class FulfillRequest(BaseModel):
+    order_id: uuid.UUID
+    items: list[FulfillItem] = Field(min_length=1)
+
+
+class FulfillResponse(BaseModel):
+    order_id: uuid.UUID
+    status: str  # FULFILLED
+    processed_at: datetime

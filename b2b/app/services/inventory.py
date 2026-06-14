@@ -183,3 +183,66 @@ async def unreserve(body: UnreserveRequest, db: AsyncSession) -> Reservation:
 
     await db.flush()
     return reservation
+
+
+# ─── Fulfill ─────────────────────────────────────────────────────────────────
+
+async def fulfill(body: "FulfillRequest", db: AsyncSession) -> "Reservation":
+    """
+    Финальное списание резерва при доставке.
+    active_quantity НЕ меняется — товар уже у покупателя.
+    Идемпотентность по order_id: повторный вызов → 200 без изменений.
+    SELECT FOR UPDATE по задействованным SKU.
+    """
+    from app.schemas.inventory import FulfillRequest
+    from app.models import ReservationStatus
+
+    # ── Идемпотентность: уже выполнено для этого order_id ───────────────────
+    existing = await db.scalar(
+        select(Reservation)
+        .where(
+            Reservation.order_id == body.order_id,
+            Reservation.status == ReservationStatus.FULFILLED,
+        )
+    )
+    if existing is not None:
+        return existing
+
+    # ── SELECT FOR UPDATE ────────────────────────────────────────────────────
+    sku_ids = [item.sku_id for item in body.items]
+    result = await db.execute(
+        select(SKU)
+        .where(SKU.id.in_(sku_ids))
+        .with_for_update()
+    )
+    skus_by_id: dict[uuid.UUID, SKU] = {sku.id: sku for sku in result.scalars().all()}
+
+    for item in body.items:
+        sku = skus_by_id.get(item.sku_id)
+        if sku is None:
+            raise LookupError(f"SKU {item.sku_id} not found")
+        # Списываем только из резерва; active_quantity не трогаем
+        sku.reserved_quantity = max(0, sku.reserved_quantity - item.quantity)
+
+    # ── Помечаем резервацию как FULFILLED ────────────────────────────────────
+    reservation = await db.scalar(
+        select(Reservation)
+        .where(
+            Reservation.order_id == body.order_id,
+            Reservation.status == ReservationStatus.RESERVED,
+        )
+    )
+    if reservation is not None:
+        reservation.status = ReservationStatus.FULFILLED
+    else:
+        # Резервация не найдена (возможно уже UNRESERVED) — создаём запись
+        # для идемпотентности будущих вызовов
+        reservation = Reservation(
+            idempotency_key=uuid.uuid4(),
+            order_id=body.order_id,
+            status=ReservationStatus.FULFILLED,
+        )
+        db.add(reservation)
+
+    await db.flush()
+    return reservation
