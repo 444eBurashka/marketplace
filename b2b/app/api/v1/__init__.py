@@ -6,6 +6,7 @@ import app.api.v1.skus as skus
 import app.api.v1.patch_endpoints as patch_endpoints
 import app.api.v1.invoices as invoices
 import app.api.v1.moderation_events as moderation_events
+import app.api.v1.inventory as inventory
 
 
 api_router = APIRouter()
@@ -17,3 +18,4 @@ api_router.include_router(skus.router, prefix="", tags=["SKUs"])
 api_router.include_router(patch_endpoints.router, prefix="", tags=["Edit"])
 api_router.include_router(invoices.router, prefix="/invoices", tags=["Invoices"])
 api_router.include_router(moderation_events.router, prefix="/moderation/events", tags=["Moderation Events"])
+api_router.include_router(inventory.router, prefix="/inventory", tags=["Inventory"])
