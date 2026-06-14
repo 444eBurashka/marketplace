@@ -143,8 +143,10 @@ async def test_get_moderated_product_returns_full_payload(
     data = response.json()
     assert data["id"] == str(moderated_product.id)
     assert data["status"] == "MODERATED"
-    assert data["blocking_reason_id"] is None
-    assert data["moderator_comment"] is None
+    # ProductDetailResponse — обязательные поля по OpenAPI
+    assert data["blocked"] is False
+    assert data["blocking_reason"] is None
+    assert data["field_reports"] == []
     assert isinstance(data["skus"], list)
 
 
@@ -159,8 +161,16 @@ async def test_get_blocked_product_returns_blocking_reason_and_field_reports(
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "BLOCKED"
-    assert data["blocking_reason_id"] == str(blocking_reason.id)
-    assert data["moderator_comment"] == "Фото не совпадает"
+    assert data["blocked"] is True
+    # blocking_reason — объект, не просто id
+    assert data["blocking_reason"] is not None
+    assert data["blocking_reason"]["id"] == str(blocking_reason.id)
+    assert data["blocking_reason"]["title"] == blocking_reason.title
+    # нет legacy-полей
+    assert "blocking_reason_id" not in data
+    assert "moderator_comment" not in data
+    # field_reports — массив
+    assert isinstance(data["field_reports"], list)
 
 
 @pytest.mark.asyncio
