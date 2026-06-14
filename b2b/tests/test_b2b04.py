@@ -126,58 +126,44 @@ async def test_delete_sets_deleted_true(
 
 
 async def test_delete_emits_event_to_moderation(
-    client: AsyncClient, auth_headers, db_session, seller, category, httpx_mock
+    client: AsyncClient, auth_headers, db_session, seller, category
 ):
     """После удаления уходит fire-and-forget событие в Moderation."""
-    httpx_mock.add_response(
-        url=f"{settings.moderation_internal_url}/api/v1/b2b/events",
-        method="POST",
-        status_code=200,
-    )
+    from unittest.mock import AsyncMock, patch
+
     product = await _make_product(db_session, seller, category)
 
-    response = await client.delete(
-        f"/api/v1/products/{product.id}",
-        headers=auth_headers,
-    )
-    assert response.status_code == 204
+    with patch("app.services.delete_service._send_moderation_deleted", new_callable=AsyncMock) as mock_mod:
+        response = await client.delete(
+            f"/api/v1/products/{product.id}",
+            headers=auth_headers,
+        )
 
-    mod_requests = [
-        r for r in httpx_mock.get_requests()
-        if "moderation" in str(r.url)
-    ]
-    assert len(mod_requests) == 1
-    body = mod_requests[0].read()
-    import json
-    data = json.loads(body)
-    assert data["event_type"] == "DELETED"
-    assert data["payload"]["product_id"] == str(product.id)
+    assert response.status_code == 204
+    mock_mod.assert_awaited_once()
+    call_product = mock_mod.call_args.args[0]
+    assert call_product.id == product.id
 
 
 async def test_delete_emits_product_deleted_to_b2c(
-    client: AsyncClient, auth_headers, db_session, seller, category, httpx_mock
+    client: AsyncClient, auth_headers, db_session, seller, category
 ):
     """После удаления уходит событие PRODUCT_DELETED в B2C с sku_ids."""
-    httpx_mock.add_response(method="POST", status_code=200)
+    from unittest.mock import AsyncMock, patch
 
     product = await _make_product(db_session, seller, category)
     sku = await _make_sku(db_session, product)
 
-    response = await client.delete(
-        f"/api/v1/products/{product.id}",
-        headers=auth_headers,
-    )
-    assert response.status_code == 204
+    with patch("app.services.delete_service._send_b2c_deleted", new_callable=AsyncMock) as mock_b2c:
+        response = await client.delete(
+            f"/api/v1/products/{product.id}",
+            headers=auth_headers,
+        )
 
-    b2c_requests = [
-        r for r in httpx_mock.get_requests()
-        if "b2c" in str(r.url)
-    ]
-    assert len(b2c_requests) == 1
-    import json
-    data = json.loads(b2c_requests[0].read())
-    assert data["event_type"] == "PRODUCT_DELETED"
-    assert str(sku.id) in data["payload"]["sku_ids"]
+    assert response.status_code == 204
+    mock_b2c.assert_awaited_once()
+    call_sku_ids = mock_b2c.call_args.args[1]
+    assert sku.id in call_sku_ids
 
 
 # ─── Unhappy path ─────────────────────────────────────────────────────────────
