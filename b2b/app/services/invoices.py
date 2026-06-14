@@ -44,7 +44,7 @@ async def create_invoice(
     # Создаём накладную
     invoice = Invoice(
         seller_id=seller_id,
-        status=InvoiceStatus.PENDING,
+        status=InvoiceStatus.CREATED,
     )
     db.add(invoice)
     await db.flush()
@@ -74,7 +74,7 @@ async def accept_invoice(
     if invoice is None:
         raise LookupError("Invoice not found")
 
-    if invoice.status != InvoiceStatus.PENDING:
+    if invoice.status != InvoiceStatus.CREATED:
         raise ValueError("Invoice already processed")
 
     # Индекс позиций по id
@@ -101,7 +101,7 @@ async def accept_invoice(
         if all(a == q for a, q in zip(accepted, quantities)):
             invoice.status = InvoiceStatus.ACCEPTED
         elif all(a == 0 for a in accepted):
-            invoice.status = InvoiceStatus.REJECTED
+            invoice.status = InvoiceStatus.CANCELLED
         else:
             invoice.status = InvoiceStatus.PARTIALLY_ACCEPTED
     else:

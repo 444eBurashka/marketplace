@@ -22,10 +22,10 @@ class ProductStatus(str, Enum):
 
 
 class InvoiceStatus(str, Enum):
-    PENDING = "PENDING"
+    CREATED = "CREATED"
     ACCEPTED = "ACCEPTED"
     PARTIALLY_ACCEPTED = "PARTIALLY_ACCEPTED"
-    REJECTED = "REJECTED"
+    CANCELLED = "CANCELLED"
 
 
 class ReservationStatus(str, Enum):
@@ -277,7 +277,7 @@ class Invoice(Base):
     )
     status: Mapped[InvoiceStatus] = mapped_column(
         sa.Enum(InvoiceStatus, name="invoicestatus"),
-        default=InvoiceStatus.PENDING,
+        default=InvoiceStatus.CREATED,
         nullable=False,
     )
     accepted_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))

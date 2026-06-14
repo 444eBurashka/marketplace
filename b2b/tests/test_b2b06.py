@@ -198,7 +198,7 @@ async def test_create_invoice_with_moderated_sku_returns_201(
     )
     assert response.status_code == 201
     data = response.json()
-    assert data["status"] == "PENDING"
+    assert data["status"] == "CREATED"
     assert len(data["items"]) == 1
     assert data["items"][0]["quantity"] == 10
     assert data["items"][0]["accepted_quantity"] is None
