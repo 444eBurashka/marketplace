@@ -115,3 +115,51 @@ class ProductListResponse(BaseModel):
     total_count: int
     limit: int
     offset: int
+
+
+# ─── B2B-07: Каталог для B2C ─────────────────────────────────────────────────
+
+class CatalogSKUResponse(BaseModel):
+    """SKU в каталоге B2C — без cost_price и reserved_quantity."""
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    product_id: uuid.UUID
+    name: str
+    price: int
+    discount: int
+    stock_quantity: int = Field(alias=None, validation_alias="quantity")
+    active_quantity: int
+    article: str | None = None
+    images: list[ImageOut]
+    characteristics: list[CharacteristicOut] = Field(validation_alias="attributes")
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+
+class CatalogProductResponse(BaseModel):
+    """Товар в каталоге B2C — полный, без seller-only полей."""
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    seller_id: uuid.UUID
+    category_id: uuid.UUID | None
+    title: str
+    slug: str
+    description: str
+    status: str
+    deleted: bool
+    images: list[ImageOut]
+    characteristics: list[CharacteristicOut]
+    skus: list[CatalogSKUResponse]
+    created_at: datetime
+    updated_at: datetime
+
+
+class CatalogListResponse(BaseModel):
+    items: list[CatalogProductResponse]
+    total_count: int
+    limit: int
+    offset: int

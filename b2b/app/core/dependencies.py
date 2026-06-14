@@ -44,3 +44,23 @@ async def get_current_seller(
 
 # Алиас для читаемости в роутерах
 CurrentSeller = Annotated[Seller, Depends(get_current_seller)]
+
+
+async def get_optional_seller(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> "Seller | None":
+    """Как get_current_seller, но возвращает None вместо 401 при отсутствии токена."""
+    if credentials is None:
+        return None
+    try:
+        payload = decode_token(credentials.credentials, settings.secret_key)
+        seller_id = payload.get("sub")
+        if seller_id is None:
+            return None
+        result = await db.execute(
+            select(Seller).where(Seller.id == uuid.UUID(seller_id), Seller.is_active == True)  # noqa: E712
+        )
+        return result.scalar_one_or_none()
+    except Exception:
+        return None
