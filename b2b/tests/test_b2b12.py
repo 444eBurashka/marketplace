@@ -163,7 +163,7 @@ async def test_delete_sku_with_active_reserves_returns_409(
 async def test_last_sku_on_moderation_transitions_product_to_created(
     client: AsyncClient, db_session, seller, category, auth_headers
 ):
-    """last_sku_on_moderation_transitions_product_to_created — последний SKU удалён + ON_MODERATION → CREATED + событие DELETED в Moderation."""
+    """last_sku_on_moderation_transitions_product_to_created — последний SKU удалён + ON_MODERATION → CREATED + событие PRODUCT_DELETED в Moderation."""
     product = await make_product(
         db_session, seller, category,
         status=ProductStatus.ON_MODERATION,
@@ -180,8 +180,51 @@ async def test_last_sku_on_moderation_transitions_product_to_created(
     await db_session.refresh(product)
     assert product.status == ProductStatus.CREATED
 
-    # Событие DELETED отправлено в Moderation
+    # Событие отправлено в Moderation с верным продуктом
     mock_mod.assert_awaited_once()
+    assert mock_mod.call_args.args[0].id == product.id
+
+
+@pytest.mark.asyncio
+async def test_moderation_deleted_event_payload_structure(
+    client: AsyncClient, db_session, seller, category, auth_headers
+):
+    """Проверяем структуру тела события PRODUCT_DELETED в Moderation: путь и IncomingB2BEvent."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    product = await make_product(
+        db_session, seller, category,
+        status=ProductStatus.ON_MODERATION,
+        slug_suffix="del-payload",
+    )
+    sku = await make_sku(db_session, product, quantity=3, reserved_quantity=0)
+
+    captured = {}
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+
+    mock_post = AsyncMock(return_value=mock_response)
+    mock_http_client = AsyncMock()
+    mock_http_client.post = mock_post
+    mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+    mock_http_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("httpx.AsyncClient", return_value=mock_http_client):
+        resp = await client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers)
+
+    assert resp.status_code == 204
+    mock_post.assert_awaited_once()
+
+    call_url = mock_post.call_args.args[0]
+    body = mock_post.call_args.kwargs.get("json", {})
+
+    assert call_url.endswith("/api/v1/b2b/events")
+    assert body["event_type"] == "PRODUCT_DELETED"
+    assert "occurred_at" in body
+    assert "idempotency_key" in body
+    assert body["payload"]["product_id"] == str(product.id)
+    assert body["payload"]["seller_id"] == str(product.seller_id)
 
 
 @pytest.mark.asyncio
@@ -211,7 +254,6 @@ async def test_sku_out_of_stock_event_on_moderated_product(
         status=ProductStatus.MODERATED,
         slug_suffix="del-oos",
     )
-    # SKU с остатком (active_quantity = quantity - reserved = 10 - 0 = 10)
     sku = await make_sku(db_session, product, quantity=10, reserved_quantity=0)
 
     with patch("app.services.skus._send_b2c_sku_out_of_stock", new_callable=AsyncMock) as mock_b2c:
@@ -219,9 +261,47 @@ async def test_sku_out_of_stock_event_on_moderated_product(
 
     assert resp.status_code == 204
     mock_b2c.assert_awaited_once()
-    # Проверяем аргументы вызова
-    call_args = mock_b2c.call_args
-    assert call_args.args[1] == sku.id  # sku_id передан верно
+    assert mock_b2c.call_args.args[1] == sku.id
+
+
+@pytest.mark.asyncio
+async def test_b2c_out_of_stock_event_payload_structure(
+    client: AsyncClient, db_session, seller, category, auth_headers
+):
+    """Проверяем структуру тела события SKU_OUT_OF_STOCK в B2C: путь и IncomingB2BEvent."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    product = await make_product(
+        db_session, seller, category,
+        status=ProductStatus.MODERATED,
+        slug_suffix="del-oos-payload",
+    )
+    sku = await make_sku(db_session, product, quantity=5, reserved_quantity=0)
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+
+    mock_post = AsyncMock(return_value=mock_response)
+    mock_http_client = AsyncMock()
+    mock_http_client.post = mock_post
+    mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+    mock_http_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("httpx.AsyncClient", return_value=mock_http_client):
+        resp = await client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers)
+
+    assert resp.status_code == 204
+    mock_post.assert_awaited_once()
+
+    call_url = mock_post.call_args.args[0]
+    body = mock_post.call_args.kwargs.get("json", {})
+
+    assert call_url.endswith("/api/v1/b2b/events")
+    assert body["event_type"] == "SKU_OUT_OF_STOCK"
+    assert "occurred_at" in body
+    assert "idempotency_key" in body
+    assert body["payload"]["product_id"] == str(product.id)
+    assert str(sku.id) in body["payload"]["sku_ids"]
 
 
 @pytest.mark.asyncio

@@ -150,18 +150,20 @@ async def create_sku(
 # ─── B2B-12: Удаление SKU ────────────────────────────────────────────────────
 
 async def _send_moderation_deleted_event(product: Product) -> None:
-    """Событие DELETED в Moderation (товар ушёл из очереди — нет SKU)."""
+    """Событие PRODUCT_DELETED в Moderation (товар ушёл из очереди — нет SKU)."""
     payload = {
         "idempotency_key": str(uuid.uuid4()),
-        "product_id": str(product.id),
-        "seller_id": str(product.seller_id),
-        "event": "DELETED",
-        "date": datetime.now(UTC).isoformat(),
+        "event_type": "PRODUCT_DELETED",
+        "occurred_at": datetime.now(UTC).isoformat(),
+        "payload": {
+            "product_id": str(product.id),
+            "seller_id": str(product.seller_id),
+        },
     }
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             await client.post(
-                f"{settings.moderation_internal_url}/api/v1/events/product",
+                f"{settings.moderation_internal_url}/api/v1/b2b/events",
                 json=payload,
                 headers={"X-Service-Key": settings.service_key},
             )
@@ -173,15 +175,17 @@ async def _send_b2c_sku_out_of_stock(product: Product, sku_id: uuid.UUID) -> Non
     """Событие SKU_OUT_OF_STOCK в B2C (MODERATED-товар, active_quantity > 0)."""
     payload = {
         "idempotency_key": str(uuid.uuid4()),
-        "event": "SKU_OUT_OF_STOCK",
-        "product_id": str(product.id),
-        "sku_ids": [str(sku_id)],
-        "date": datetime.now(UTC).isoformat(),
+        "event_type": "SKU_OUT_OF_STOCK",
+        "occurred_at": datetime.now(UTC).isoformat(),
+        "payload": {
+            "product_id": str(product.id),
+            "sku_ids": [str(sku_id)],
+        },
     }
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             await client.post(
-                f"{settings.b2c_internal_url}/api/v1/events/product",
+                f"{settings.b2c_internal_url}/api/v1/b2b/events",
                 json=payload,
                 headers={"X-Service-Key": settings.service_key},
             )
