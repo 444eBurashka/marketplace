@@ -28,7 +28,7 @@ async def _send_b2c_product_blocked(product: Product) -> None:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             await client.post(
-                f"{settings.b2c_internal_url}/api/v1/events/product",
+                f"{settings.b2c_internal_url}/api/v1/b2b/events",
                 json=payload,
                 headers={"X-Service-Key": settings.service_key},
             )

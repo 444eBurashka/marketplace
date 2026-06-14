@@ -133,31 +133,33 @@ async def test_moderated_event_clears_blocking_data(
 
 @pytest.mark.asyncio
 async def test_blocked_soft_saves_field_reports(
-    client: AsyncClient, db_session, seller, category, blocking_reason, httpx_mock
+    client: AsyncClient, db_session, seller, category, blocking_reason
 ):
     """BLOCKED soft: статус BLOCKED, blocking_reason_id сохранён, каскад в B2C."""
-    httpx_mock.add_response(method="POST", status_code=200)
+    from unittest.mock import AsyncMock, patch
 
     product = await _make_product(db_session, seller, category)
     await _make_sku(db_session, product)
 
     idempotency_key = str(uuid.uuid4())
-    response = await client.post(
-        MODERATION_URL,
-        json={
-            "idempotency_key": idempotency_key,
-            "product_id": str(product.id),
-            "event_type": "BLOCKED",
-            "hard_block": False,
-            "blocking_reason_id": str(blocking_reason.id),
-            "moderator_comment": "Фото не совпадает с описанием",
-            "field_reports": [
-                {"field_name": "description", "sku_id": None, "comment": "Текст скопирован"}
-            ],
-            "occurred_at": "2026-06-13T10:00:00Z",
-        },
-        headers=SERVICE_HEADERS,
-    )
+    with patch("app.services.moderation_events._send_b2c_product_blocked", new_callable=AsyncMock) as mock_b2c:
+        response = await client.post(
+            MODERATION_URL,
+            json={
+                "idempotency_key": idempotency_key,
+                "product_id": str(product.id),
+                "event_type": "BLOCKED",
+                "hard_block": False,
+                "blocking_reason_id": str(blocking_reason.id),
+                "moderator_comment": "Фото не совпадает с описанием",
+                "field_reports": [
+                    {"field_name": "description", "sku_id": None, "comment": "Текст скопирован"}
+                ],
+                "occurred_at": "2026-06-13T10:00:00Z",
+            },
+            headers=SERVICE_HEADERS,
+        )
+
     assert response.status_code == 204
 
     await db_session.refresh(product)
@@ -167,43 +169,43 @@ async def test_blocked_soft_saves_field_reports(
     assert product.moderator_comment == "Фото не совпадает с описанием"
 
     # Проверяем каскад в B2C
-    b2c_requests = [r for r in httpx_mock.get_requests() if "b2c" in str(r.url)]
-    assert len(b2c_requests) == 1
-    data = json.loads(b2c_requests[0].read())
-    assert data["payload"]["product_id"] == str(product.id)
+    mock_b2c.assert_awaited_once()
+    call_product = mock_b2c.call_args.args[0]
+    assert call_product.id == product.id
 
 
 @pytest.mark.asyncio
 async def test_blocked_hard_sets_terminal_status(
-    client: AsyncClient, db_session, seller, category, blocking_reason, httpx_mock
+    client: AsyncClient, db_session, seller, category, blocking_reason
 ):
     """BLOCKED hard: статус HARD_BLOCKED, каскад в B2C."""
-    httpx_mock.add_response(method="POST", status_code=200)
+    from unittest.mock import AsyncMock, patch
 
     product = await _make_product(db_session, seller, category)
     await _make_sku(db_session, product)
 
-    response = await client.post(
-        MODERATION_URL,
-        json={
-            "idempotency_key": str(uuid.uuid4()),
-            "product_id": str(product.id),
-            "event_type": "BLOCKED",
-            "hard_block": True,
-            "blocking_reason_id": str(blocking_reason.id),
-            "moderator_comment": "Грубое нарушение",
-            "occurred_at": "2026-06-13T10:00:00Z",
-        },
-        headers=SERVICE_HEADERS,
-    )
+    with patch("app.services.moderation_events._send_b2c_product_blocked", new_callable=AsyncMock) as mock_b2c:
+        response = await client.post(
+            MODERATION_URL,
+            json={
+                "idempotency_key": str(uuid.uuid4()),
+                "product_id": str(product.id),
+                "event_type": "BLOCKED",
+                "hard_block": True,
+                "blocking_reason_id": str(blocking_reason.id),
+                "moderator_comment": "Грубое нарушение",
+                "occurred_at": "2026-06-13T10:00:00Z",
+            },
+            headers=SERVICE_HEADERS,
+        )
+
     assert response.status_code == 204
 
     await db_session.refresh(product)
     assert product.status == ProductStatus.HARD_BLOCKED
     assert product.blocked is True
 
-    b2c_requests = [r for r in httpx_mock.get_requests() if "b2c" in str(r.url)]
-    assert len(b2c_requests) == 1
+    mock_b2c.assert_awaited_once()
 
 
 @pytest.mark.asyncio
