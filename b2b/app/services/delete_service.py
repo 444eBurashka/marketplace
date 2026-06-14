@@ -12,13 +12,11 @@ from app.models import Product, SKU
 
 async def _send_moderation_deleted(product: Product) -> None:
     payload = {
-        "event_type": "DELETED",
+        "idempotency_key": str(uuid.uuid4()),
+        "event_type": "PRODUCT_DELETED",
         "occurred_at": datetime.now(UTC).isoformat(),
-        "payload": {
-            "idempotency_key": str(uuid.uuid4()),
-            "product_id": str(product.id),
-            "seller_id": str(product.seller_id),
-        },
+        "product_id": str(product.id),
+        "seller_id": str(product.seller_id),
     }
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
