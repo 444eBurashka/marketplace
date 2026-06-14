@@ -110,7 +110,14 @@ async def get_product(
     product_id: uuid.UUID,
     seller_id: uuid.UUID,
     db: AsyncSession,
-) -> Product:
+) -> dict:
+    """
+    Возвращает товар с blocking_reason и field_reports.
+    field_reports берутся из последнего BLOCKED-события в inbox.
+    """
+    from app.models import ModerationEventInbox
+    from sqlalchemy import desc
+
     result = await db.execute(_load_product_query(product_id))
     product = result.scalar_one_or_none()
 
@@ -118,7 +125,50 @@ async def get_product(
     if product is None or product.seller_id != seller_id:
         raise LookupError("Product not found")
 
-    return product
+    # Подтягиваем field_reports из последнего BLOCKED-события
+    field_reports: list[dict] = []
+    if product.status in (ProductStatus.BLOCKED, ProductStatus.HARD_BLOCKED):
+        inbox_result = await db.execute(
+            select(ModerationEventInbox)
+            .where(
+                ModerationEventInbox.product_id == product_id,
+                ModerationEventInbox.event_type == "BLOCKED",
+            )
+            .order_by(desc(ModerationEventInbox.processed_at))
+            .limit(1)
+        )
+        inbox_row = inbox_result.scalar_one_or_none()
+        if inbox_row is not None:
+            field_reports = inbox_row.raw_payload.get("field_reports", [])
+
+    # Формируем blocking_reason как объект (не просто id)
+    blocking_reason_obj = None
+    if product.blocking_reason is not None:
+        blocking_reason_obj = {
+            "id": product.blocking_reason.id,
+            "title": product.blocking_reason.title,
+            "comment": product.blocking_reason.comment,
+        }
+
+    return {
+        "id": product.id,
+        "seller_id": product.seller_id,
+        "category_id": product.category_id,
+        "title": product.title,
+        "slug": product.slug,
+        "description": product.description,
+        "status": product.status,
+        "deleted": product.deleted,
+        "blocked": product.blocked,
+        "images": product.images,
+        "characteristics": product.characteristics,
+        "skus": product.skus,
+        "created_at": product.created_at,
+        "updated_at": product.updated_at,
+        "blocking_reason": blocking_reason_obj,
+        "field_reports": field_reports,
+    }
+
 
 async def list_products(
     seller_id: uuid.UUID,

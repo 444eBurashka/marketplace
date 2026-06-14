@@ -58,6 +58,42 @@ class ProductResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+class BlockingReasonOut(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    title: str
+    comment: str | None = None
+
+
+class FieldReportOut(BaseModel):
+    field_name: str
+    sku_id: uuid.UUID | None = None
+    comment: str
+
+
+class ProductDetailResponse(BaseModel):
+    """Схема GET /products/{id} по OpenAPI — включает blocked, blocking_reason, field_reports."""
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    seller_id: uuid.UUID
+    category_id: uuid.UUID | None
+    title: str
+    slug: str
+    description: str
+    status: str
+    deleted: bool
+    blocked: bool
+    images: list[ImageOut]
+    characteristics: list[CharacteristicOut]
+    skus: list[SKUResponse]
+    created_at: datetime
+    updated_at: datetime
+    blocking_reason: BlockingReasonOut | None = None
+    field_reports: list[FieldReportOut] = []
+
+
 # ─── B2B-11: Список товаров продавца ─────────────────────────────────────────
 
 class ProductListItem(BaseModel):

@@ -7,6 +7,7 @@ from app.core.dependencies import CurrentSeller
 from app.db.session import get_db
 from app.schemas.products import (
     ProductCreateRequest,
+    ProductDetailResponse,
     ProductListResponse,
     ProductListItem,
     ProductResponse,
@@ -80,21 +81,21 @@ async def create_product_endpoint(
     return ProductResponse.model_validate(product)
 
 
-@router.get("/{product_id}", response_model=ProductResponse)
+@router.get("/{product_id}", response_model=ProductDetailResponse)
 async def get_product_endpoint(
     product_id: uuid.UUID,
     seller: CurrentSeller,
     db: DB,
-) -> ProductResponse:
+) -> ProductDetailResponse:
     """Карточка товара продавца. Чужой товар → 404 (не 403)."""
     try:
-        product = await get_product(product_id, seller.id, db)
+        data = await get_product(product_id, seller.id, db)
     except LookupError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "NOT_FOUND", "message": str(exc)},
         )
-    return ProductResponse.model_validate(product)
+    return ProductDetailResponse.model_validate(data)
 
 @router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_product_endpoint(
