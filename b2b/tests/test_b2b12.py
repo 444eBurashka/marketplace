@@ -301,7 +301,8 @@ async def test_b2c_out_of_stock_event_payload_structure(
     assert "occurred_at" in body
     assert "idempotency_key" in body
     assert body["payload"]["product_id"] == str(product.id)
-    assert str(sku.id) in body["payload"]["sku_ids"]
+    assert body["payload"]["sku_id"] == str(sku.id)
+    assert body["payload"]["available_quantity"] == 0
 
 
 @pytest.mark.asyncio
