@@ -179,7 +179,8 @@ async def _send_b2c_sku_out_of_stock(product: Product, sku_id: uuid.UUID) -> Non
         "occurred_at": datetime.now(UTC).isoformat(),
         "payload": {
             "product_id": str(product.id),
-            "sku_ids": [str(sku_id)],
+            "sku_id": str(sku_id),
+            "available_quantity": 0,
         },
     }
     try:
