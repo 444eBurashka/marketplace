@@ -23,3 +23,16 @@ class BlockingReasonResponse(BaseModel):
     description: str | None = None
     hard_block: bool
     is_active: bool
+
+
+class BlockingReasonListResponse(BaseModel):
+    items: list[BlockingReasonResponse]
+    total_count: int
+
+
+# Alias for public-facing read API — slight variant with minimal safe fields
+class ProductBlockingReasonOut(BaseModel):
+    model_config = {"from_attributes": True}
+    id: uuid.UUID
+    title: str
+    hard_block: bool
