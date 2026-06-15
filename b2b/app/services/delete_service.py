@@ -15,8 +15,10 @@ async def _send_moderation_deleted(product: Product) -> None:
         "idempotency_key": str(uuid.uuid4()),
         "event_type": "PRODUCT_DELETED",
         "occurred_at": datetime.now(UTC).isoformat(),
-        "product_id": str(product.id),
-        "seller_id": str(product.seller_id),
+        "payload": {
+            "product_id": str(product.id),
+            "seller_id": str(product.seller_id),
+        },
     }
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -32,11 +34,10 @@ async def _send_moderation_deleted(product: Product) -> None:
 async def _send_b2c_deleted(product: Product, sku_ids: list[uuid.UUID]) -> None:
     payload = {
         "event_type": "PRODUCT_DELETED",
+        "idempotency_key": str(uuid.uuid4()),
         "occurred_at": datetime.now(UTC).isoformat(),
         "payload": {
-            "idempotency_key": str(uuid.uuid4()),
             "product_id": str(product.id),
-            "sku_ids": [str(s) for s in sku_ids],
         },
     }
     try:
