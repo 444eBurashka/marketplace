@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
@@ -7,8 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.main import app
+from app.core.config import settings
+from app.core.security import hash_password
 from app.db.base import Base
 from app.db.session import get_db
+from app.models import Moderator, ModeratorRole
+from shared.auth.jwt import create_access_token
 
 
 @pytest_asyncio.fixture
@@ -39,6 +45,66 @@ async def db_session(test_engine):
     async with async_session() as session:
         yield session
         await session.rollback()
+
+
+@pytest_asyncio.fixture
+async def moderator(db_session) -> Moderator:
+    """Create a test moderator."""
+    mod = Moderator(
+        email="moderator@test.com",
+        hashed_password=hash_password("testpass1234"),
+        first_name="Test",
+        last_name="Moderator",
+        role=ModeratorRole.MODERATOR,
+        is_active=True,
+    )
+    db_session.add(mod)
+    await db_session.flush()
+    return mod
+
+
+@pytest_asyncio.fixture
+async def moderator_token(moderator: Moderator) -> str:
+    """JWT token for the test moderator."""
+    return create_access_token(
+        subject=str(moderator.id),
+        secret_key=settings.secret_key,
+        algorithm=settings.algorithm,
+        expires_minutes=settings.access_token_expire_minutes,
+    )
+
+
+@pytest_asyncio.fixture
+async def auth_headers(moderator_token: str) -> dict[str, str]:
+    """Headers with Authorization bearer token."""
+    return {"Authorization": f"Bearer {moderator_token}"}
+
+
+@pytest_asyncio.fixture
+async def second_moderator(db_session) -> Moderator:
+    """A second moderator for concurrent tests."""
+    mod = Moderator(
+        email="moderator2@test.com",
+        hashed_password=hash_password("testpass1234"),
+        first_name="Second",
+        last_name="Mod",
+        role=ModeratorRole.MODERATOR,
+        is_active=True,
+    )
+    db_session.add(mod)
+    await db_session.flush()
+    return mod
+
+
+@pytest_asyncio.fixture
+async def second_auth_headers(second_moderator: Moderator) -> dict[str, str]:
+    token = create_access_token(
+        subject=str(second_moderator.id),
+        secret_key=settings.secret_key,
+        algorithm=settings.algorithm,
+        expires_minutes=settings.access_token_expire_minutes,
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest_asyncio.fixture

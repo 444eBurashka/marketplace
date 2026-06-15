@@ -26,5 +26,10 @@ class Settings(BaseSettings):
     service_key: str = Field(default="internal-service-key")
     b2b_internal_url: str = "http://b2b_app:8001"
 
+    claim_timeout_minutes: int = Field(
+        default=30,
+        description="Timeout for IN_REVIEW. After expiry ticket returns to PENDING",
+    )
+
 
 settings = Settings()
