@@ -97,6 +97,37 @@ async def second_moderator(db_session) -> Moderator:
 
 
 @pytest_asyncio.fixture
+async def admin_moderator(db_session) -> Moderator:
+    """An admin moderator for admin-only endpoint tests."""
+    mod = Moderator(
+        email="admin@test.com",
+        hashed_password=hash_password("adminpass1234"),
+        first_name="Admin",
+        last_name="User",
+        role=ModeratorRole.ADMIN,
+        is_active=True,
+    )
+    db_session.add(mod)
+    await db_session.flush()
+    return mod
+
+
+@pytest_asyncio.fixture
+async def admin_token(admin_moderator: Moderator) -> str:
+    return create_access_token(
+        subject=str(admin_moderator.id),
+        secret_key=settings.secret_key,
+        algorithm=settings.algorithm,
+        expires_minutes=settings.access_token_expire_minutes,
+    )
+
+
+@pytest_asyncio.fixture
+async def admin_headers(admin_token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {admin_token}"}
+
+
+@pytest_asyncio.fixture
 async def second_auth_headers(second_moderator: Moderator) -> dict[str, str]:
     token = create_access_token(
         subject=str(second_moderator.id),
