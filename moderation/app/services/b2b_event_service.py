@@ -107,6 +107,16 @@ async def _handle_edited(payload: dict, db: AsyncSession) -> dict:
         await db.flush()
         return {"id": str(active_ticket.id), "product_id": str(product_id), "status": active_ticket.status.value}
 
+    # Check if product has HARD_BLOCKED ticket (terminal) -> silently ignore edit
+    hard_blocked = await db.scalar(
+        select(Ticket.id).where(
+            Ticket.product_id == product_id,
+            Ticket.status == TicketStatus.HARD_BLOCKED,
+        ).limit(1)
+    )
+    if hard_blocked is not None:
+        return {"status": "ignored", "reason": "Product is HARD_BLOCKED"}
+
     ticket = Ticket(
         product_id=product_id,
         seller_id=uuid.UUID(payload["seller_id"]),
