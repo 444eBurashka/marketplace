@@ -13,7 +13,11 @@ from app.schemas.inventory import ReserveRequest, UnreserveRequest
 
 # ─── Исходящие события ───────────────────────────────────────────────────────
 
-async def _send_b2c_sku_out_of_stock(sku_id: uuid.UUID, product_id: uuid.UUID) -> None:
+async def _send_b2c_sku_out_of_stock(
+    sku_id: uuid.UUID,
+    product_id: uuid.UUID,
+    available_quantity: int = 0,
+) -> None:
     """Fire-and-forget: SKU_OUT_OF_STOCK в B2C когда active_quantity стал 0."""
     payload = {
         "idempotency_key": str(uuid.uuid4()),
@@ -21,7 +25,8 @@ async def _send_b2c_sku_out_of_stock(sku_id: uuid.UUID, product_id: uuid.UUID) -
         "occurred_at": datetime.now(UTC).isoformat(),
         "payload": {
             "product_id": str(product_id),
-            "sku_ids": [str(sku_id)],
+            "sku_id": str(sku_id),
+            "available_quantity": available_quantity,
         },
     }
     try:
@@ -120,7 +125,7 @@ async def reserve(body: ReserveRequest, db: AsyncSession) -> Reservation:
 
     # ── Fire-and-forget: SKU_OUT_OF_STOCK в B2C ──────────────────────────────
     for sku in out_of_stock_skus:
-        await _send_b2c_sku_out_of_stock(sku.id, sku.product_id)
+        await _send_b2c_sku_out_of_stock(sku.id, sku.product_id, available_quantity=sku.active_quantity)
 
     return reservation
 
