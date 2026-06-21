@@ -10,7 +10,7 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.models import Buyer
 from shared.errors.http import UnauthorizedError
-from shared.jwt import decode_token
+from shared.auth.jwt import decode_token
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
