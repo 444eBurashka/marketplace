@@ -11,6 +11,7 @@ from app.db.session import get_db
 from app.models import Seller
 from app.schemas.products import (
     CatalogListResponse,
+    CatalogProductDetailResponse,
     CatalogProductResponse,
     ProductCreateRequest,
     ProductDetailResponse,
@@ -163,7 +164,7 @@ async def get_product_endpoint(
                 status_code=http_status.HTTP_404_NOT_FOUND,
                 detail={"code": "NOT_FOUND", "message": str(exc)},
             )
-        return CatalogProductResponse.model_validate(product)
+        return CatalogProductDetailResponse.model_validate(product)
 
     if seller is None:
         raise HTTPException(

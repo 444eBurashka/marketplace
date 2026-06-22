@@ -121,14 +121,14 @@ class ProductListResponse(BaseModel):
 
 class CatalogSKUResponse(BaseModel):
     """SKU в каталоге B2C — без cost_price и reserved_quantity."""
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "populate_by_name": True}
 
     id: uuid.UUID
     product_id: uuid.UUID
     name: str
     price: int
     discount: int
-    stock_quantity: int = Field(alias=None, validation_alias="quantity")
+    stock_quantity: int = Field(validation_alias="quantity")
     active_quantity: int
     article: str | None = None
     images: list[ImageOut]
@@ -136,11 +136,9 @@ class CatalogSKUResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    model_config = {"from_attributes": True, "populate_by_name": True}
-
 
 class CatalogProductResponse(BaseModel):
-    """Товар в каталоге B2C — полный, без seller-only полей."""
+    """Товар в каталоге B2C — полный, без seller-only полей (список)."""
     model_config = {"from_attributes": True}
 
     id: uuid.UUID
@@ -156,6 +154,32 @@ class CatalogProductResponse(BaseModel):
     skus: list[CatalogSKUResponse]
     created_at: datetime
     updated_at: datetime
+
+
+class CatalogProductDetailResponse(BaseModel):
+    """GET /products/{id} через X-Service-Key — полная карточка по OpenAPI.
+
+    Возвращает те же поля, что ProductDetailResponse, но без IDOR-проверки
+    (Moderation и B2C видят любой товар). SKU без cost_price/reserved_quantity.
+    """
+    model_config = {"from_attributes": True}
+
+    id: uuid.UUID
+    seller_id: uuid.UUID
+    category_id: uuid.UUID | None
+    title: str
+    slug: str
+    description: str
+    status: str
+    deleted: bool
+    images: list[ImageOut]
+    characteristics: list[CharacteristicOut]
+    skus: list[CatalogSKUResponse]
+    created_at: datetime
+    updated_at: datetime
+    blocked: bool = False
+    blocking_reason: BlockingReasonOut | None = None
+    field_reports: list[FieldReportOut] = []
 
 
 class CatalogListResponse(BaseModel):
