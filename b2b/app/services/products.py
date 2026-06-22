@@ -308,10 +308,20 @@ async def list_catalog(
     total = await db.scalar(count_q) or 0
 
     # Сортировка
+    from sqlalchemy import func
+    min_price_sort_sq = (
+        select(func.min(SKU.price))
+        .where(
+            SKU.product_id == Product.id,
+            SKU.is_active == True,  # noqa: E712
+        )
+        .correlate(Product)
+        .scalar_subquery()
+    )
     if sort == "price_asc":
-        order = Product.id  # fallback — min_price через subquery дорого; используем id
+        order = min_price_sort_sq.asc()
     elif sort == "price_desc":
-        order = Product.id.desc()
+        order = min_price_sort_sq.desc()
     else:  # date_desc (default)
         order = Product.created_at.desc()
 
@@ -336,10 +346,69 @@ async def list_catalog(
 async def get_catalog_product(
     product_id: uuid.UUID,
     db: AsyncSession,
-) -> Product:
-    """Карточка товара для B2C/Moderation — без ownership-проверки."""
-    result = await db.execute(_load_product_query(product_id))
+) -> dict:
+    """
+    Карточка товара для B2C/Moderation — без ownership-проверки.
+    Возвращает полную структуру включая blocked, blocking_reason, field_reports.
+    """
+    from app.models import ModerationEventInbox
+    from sqlalchemy import desc
+
+    # Загружаем без фильтра по deleted — Moderation должна видеть любой товар
+    q = (
+        select(Product)
+        .where(Product.id == product_id)
+        .options(
+            selectinload(Product.images),
+            selectinload(Product.characteristics),
+            selectinload(Product.skus).selectinload(SKU.images),
+            selectinload(Product.skus).selectinload(SKU.attributes),
+        )
+    )
+    result = await db.execute(q)
     product = result.scalar_one_or_none()
     if product is None:
         raise LookupError("Product not found")
-    return product
+
+    # Подтягиваем field_reports из последнего BLOCKED-события
+    field_reports: list[dict] = []
+    if product.status in (ProductStatus.BLOCKED, ProductStatus.HARD_BLOCKED):
+        inbox_result = await db.execute(
+            select(ModerationEventInbox)
+            .where(
+                ModerationEventInbox.product_id == product_id,
+                ModerationEventInbox.event_type == "BLOCKED",
+            )
+            .order_by(desc(ModerationEventInbox.processed_at))
+            .limit(1)
+        )
+        inbox_row = inbox_result.scalar_one_or_none()
+        if inbox_row is not None:
+            field_reports = inbox_row.raw_payload.get("field_reports", [])
+
+    blocking_reason_obj = None
+    if product.blocking_reason is not None:
+        blocking_reason_obj = {
+            "id": product.blocking_reason.id,
+            "title": product.blocking_reason.title,
+            "comment": product.blocking_reason.comment,
+        }
+
+    return {
+        "id": product.id,
+        "seller_id": product.seller_id,
+        "category_id": product.category_id,
+        "title": product.title,
+        "slug": product.slug,
+        "description": product.description,
+        "status": product.status,
+        "deleted": product.deleted,
+        "blocked": product.blocked,
+        "images": product.images,
+        "characteristics": product.characteristics,
+        "skus": product.skus,
+        "created_at": product.created_at,
+        "updated_at": product.updated_at,
+        "blocking_reason": blocking_reason_obj,
+        "field_reports": field_reports,
+    }
