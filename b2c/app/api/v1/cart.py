@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import CurrentBuyer, OptionalBuyer
 from app.db.session import get_db
-from app.models import Buyer, Cart, CartItem
+from app.models import Buyer, Cart, CartItem, CartItemUpdate
 from app.schemas.cart import CartItemIn
 from app.services import b2b_client
 
@@ -110,28 +110,42 @@ async def get_cart(
             if sku:
                 price = sku.get("price", 0)
                 qty_available = sku.get("quantity", 0) - sku.get("reserved_quantity", 0)
-                item_out["title"] = product.get("title")
-                item_out["price"] = price
-                if qty_available <= 0:
-                    item_out["available"] = False
-                    item_out["unavailable_reason"] = "OUT_OF_STOCK"
-                else:
-                    total_amount += price * item.quantity
+                item_out["name"] = product.get("title") or product.get("name")
+                item_out["unit_price"] = price
+                item_out["line_total"] = price * item.quantity
+                item_out["available_quantity"] = max(0, qty_available)
+                item_out["is_available"] = qty_available > 0
 
         enriched.append(item_out)
 
-    return {"items": enriched, "total_amount": total_amount}
+    return {
+        "items": enriched,
+        "items_count": len(enriched),
+        "subtotal": total_amount,
+        "is_valid": all(i.get("available", True) for i in enriched),
+    }
 
-
-@router.delete("/cart/items/{item_id}", status_code=204)
+@router.delete("/cart/items/{sku_id}", status_code=204)
 async def remove_cart_item(
-    item_id: uuid.UUID,
+    sku_id: uuid.UUID,
     buyer: OptionalBuyer,
     db: DB,
     x_session_id: str | None = Header(default=None),
 ) -> None:
-    await db.execute(delete(CartItem).where(CartItem.id == item_id))
-
+    # Сначала найдём корзину, потом удалим по sku_id
+    if buyer:
+        cart = await db.scalar(select(Cart).where(Cart.buyer_id == buyer.id))
+    elif x_session_id:
+        cart = await db.scalar(select(Cart).where(Cart.session_id == x_session_id))
+    else:
+        return
+    if cart:
+        await db.execute(
+            delete(CartItem).where(
+                CartItem.cart_id == cart.id,
+                CartItem.sku_id == sku_id,
+            )
+        )
 
 @router.delete("/cart", status_code=204)
 async def clear_cart(
@@ -198,3 +212,38 @@ async def merge_cart(
     await db.delete(guest_cart)
 
     return {"merged": len(guest_items)}
+
+
+@router.patch("/cart/items/{sku_id}", status_code=200)
+async def update_cart_item(
+    sku_id: uuid.UUID,
+    body: CartItemUpdate,
+    buyer: OptionalBuyer,
+    db: DB,
+    x_session_id: str | None = Header(default=None),
+) -> dict:
+    if buyer:
+        cart = await db.scalar(select(Cart).where(Cart.buyer_id == buyer.id))
+    elif x_session_id:
+        cart = await db.scalar(select(Cart).where(Cart.session_id == x_session_id))
+    else:
+        raise HTTPException(status_code=400, detail="No cart found")
+
+    if not cart:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Cart not found"})
+
+    item = await db.scalar(
+        select(CartItem).where(
+            CartItem.cart_id == cart.id,
+            CartItem.sku_id == sku_id,
+        )
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Item not in cart"})
+
+    if body.quantity <= 0:
+        await db.execute(delete(CartItem).where(CartItem.id == item.id))
+        return {"sku_id": str(sku_id), "quantity": 0}
+
+    item.quantity = body.quantity
+    return {"sku_id": str(sku_id), "quantity": item.quantity}

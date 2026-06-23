@@ -16,7 +16,7 @@ DB = Annotated[AsyncSession, Depends(get_db)]
 
 # ─── US-CART-04: Баннеры ─────────────────────────────────────────────────────
 
-@router.get("/home/banners")
+@router.get("/banners")
 async def get_banners(db: DB) -> dict:
     now = datetime.now(UTC)
     result = await db.execute(
@@ -27,18 +27,16 @@ async def get_banners(db: DB) -> dict:
         ).order_by(Banner.priority)
     )
     banners = result.scalars().all()
-    return {
-        "items": [
+    return [
             {
                 "id": str(b.id),
                 "title": b.title,
                 "image_url": b.image_url,
-                "link_url": b.link_url,
+                "link": b.link_url,
                 "priority": b.priority,
             }
             for b in banners
         ]
-    }
 
 
 @router.post("/banner-events", status_code=201)
@@ -61,7 +59,7 @@ async def register_banner_event(
 
 # ─── US-CART-05: Подборки ────────────────────────────────────────────────────
 
-@router.get("/home/collections")
+@router.get("/collections")
 async def get_collections(db: DB) -> dict:
     result = await db.execute(
         select(Collection).where(Collection.is_active == True)  # noqa: E712
@@ -75,7 +73,7 @@ async def get_collections(db: DB) -> dict:
     }
 
 
-@router.get("/home/collections/{collection_id}/products")
+@router.get("/collections/{collection_id}/products")
 async def get_collection_products(collection_id: uuid.UUID, db: DB) -> dict:
     collection = await db.get(Collection, collection_id)
     if not collection:

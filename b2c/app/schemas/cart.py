@@ -18,7 +18,7 @@ class FavoriteOut(BaseModel):
 
 class SubscribeRequest(BaseModel):
     sku_id: uuid.UUID
-    notify_on: list[str]   # ["BACK_IN_STOCK", "PRICE_DROP"]
+    events: list[str]   # ["BACK_IN_STOCK", "PRICE_DROP"]
 
 
 class SubscriptionOut(BaseModel):
@@ -29,7 +29,7 @@ class SubscriptionOut(BaseModel):
 
 class CartItemIn(BaseModel):
     sku_id: uuid.UUID
-    product_id: uuid.UUID
+    product_id: uuid.UUID | None = None
     quantity: int = 1
 
 

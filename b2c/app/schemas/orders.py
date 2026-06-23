@@ -8,8 +8,7 @@ class CheckoutItemIn(BaseModel):
 
 
 class CheckoutRequest(BaseModel):
-    idempotency_key: uuid.UUID
-    items: list[CheckoutItemIn]
+    items: list[CheckoutItemIn] = []   # ← необязателен (спецификация не требует)
     address_id: uuid.UUID
     payment_method_id: uuid.UUID | None = None
 

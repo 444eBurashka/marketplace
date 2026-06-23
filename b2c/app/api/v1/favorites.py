@@ -14,13 +14,12 @@ router = APIRouter()
 DB = Annotated[AsyncSession, Depends(get_db)]
 
 
-@router.post("/favorites", status_code=201)
+@router.put("/favorites/{product_id}", status_code=204)  # ← PUT + path-параметр + 204
 async def add_to_favorites(
     product_id: uuid.UUID,
     buyer: CurrentBuyer,
     db: DB,
-) -> dict:
-    # Идемпотентность: если уже есть — вернуть 200
+) -> None:                    # ← 204 No Content, тело не возвращаем
     existing = await db.scalar(
         select(Favorite).where(
             Favorite.buyer_id == buyer.id,
@@ -28,16 +27,14 @@ async def add_to_favorites(
         )
     )
     if existing:
-        return {"id": str(existing.id), "product_id": str(product_id)}
+        return   # идемпотентно
 
     fav = Favorite(buyer_id=buyer.id, product_id=product_id)
     db.add(fav)
-    await db.flush()
-    return {"id": str(fav.id), "product_id": str(product_id)}
 
 
 @router.get("/favorites")
-async def get_favorites(buyer: CurrentBuyer, db: DB) -> dict:
+async def get_favorites(buyer: CurrentBuyer, db: DB, limit: int = 20, offset: int = 0) -> dict:
     result = await db.execute(
         select(Favorite).where(Favorite.buyer_id == buyer.id)
     )
@@ -58,7 +55,12 @@ async def get_favorites(buyer: CurrentBuyer, db: DB) -> dict:
             "images": product.get("images", []),
         })
 
-    return {"items": items}
+    return {
+        "items": items,
+        "total_count": len(items),
+        "limit": limit,    # добавить limit: int = Query(default=20) в сигнатуру
+        "offset": offset,  # добавить offset: int = Query(default=0) в сигнатуру
+    }
 
 
 @router.delete("/favorites/{product_id}", status_code=204)

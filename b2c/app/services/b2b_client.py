@@ -13,7 +13,7 @@ async def get_products(params: dict) -> dict:
     async with httpx.AsyncClient() as client:
         try:
             r = await client.get(
-                f"{_B2B_URL}/api/v1/products",
+                f"{_B2B_URL}/api/v1/public/products",
                 params=params,
                 headers=_HEADERS,
                 timeout=10.0,
@@ -31,7 +31,7 @@ async def get_product(product_id: str) -> dict | None:
     async with httpx.AsyncClient() as client:
         try:
             r = await client.get(
-                f"{_B2B_URL}/api/v1/products/{product_id}",
+                f"{_B2B_URL}/api/v1/public/products/{product_id}",
                 headers=_HEADERS,
                 timeout=10.0,
             )
@@ -82,7 +82,7 @@ async def reserve(order_id: str, idempotency_key: str, items: list[dict]) -> dic
     async with httpx.AsyncClient() as client:
         try:
             r = await client.post(
-                f"{_B2B_URL}/api/v1/reservations",
+                f"{_B2B_URL}/api/v1/inventory/reserve",
                 json={"order_id": order_id, "idempotency_key": idempotency_key, "items": items},
                 headers=_HEADERS,
                 timeout=15.0,
@@ -92,29 +92,50 @@ async def reserve(order_id: str, idempotency_key: str, items: list[dict]) -> dic
             raise HTTPException(status_code=503, detail="B2B service unavailable")
 
 
-async def unreserve(order_id: str) -> int:
-    """DELETE /api/v1/reservations/{order_id}. Возвращает status_code."""
-    async with httpx.AsyncClient() as client:
-        try:
-            r = await client.delete(
-                f"{_B2B_URL}/api/v1/reservations/{order_id}",
-                headers=_HEADERS,
-                timeout=10.0,
-            )
-            return r.status_code
-        except httpx.ConnectError:
-            return 503
-
-
-async def fulfill(order_id: str) -> int:
-    """POST /api/v1/reservations/{order_id}/fulfill."""
+async def unreserve(order_id: str, items: list[dict]) -> int:
+    """POST /api/v1/inventory/unreserve"""
     async with httpx.AsyncClient() as client:
         try:
             r = await client.post(
-                f"{_B2B_URL}/api/v1/reservations/{order_id}/fulfill",
+                f"{_B2B_URL}/api/v1/inventory/unreserve",
+                json={"order_id": order_id, "items": items},
                 headers=_HEADERS,
                 timeout=10.0,
             )
             return r.status_code
         except httpx.ConnectError:
             return 503
+
+
+async def fulfill(order_id: str, items: list[dict]) -> int:
+    """POST /api/v1/inventory/fulfill"""
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.post(
+                f"{_B2B_URL}/api/v1/inventory/fulfill",
+                json={"order_id": order_id, "items": items},   # ← обязательное тело
+                headers=_HEADERS,
+                timeout=10.0,
+            )
+            return r.status_code
+        except httpx.ConnectError:
+            return 503
+
+
+async def get_similar_products(product_id: str) -> list:
+    """GET /api/v1/public/products/{product_id}/similar"""
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.get(
+                f"{_B2B_URL}/api/v1/public/products/{product_id}/similar",
+                headers=_HEADERS,
+                timeout=10.0,
+            )
+            if r.status_code == 404:
+                return []
+            if r.status_code >= 500:
+                raise HTTPException(status_code=502, detail="B2B service unavailable")
+            r.raise_for_status()
+            return r.json()   # plain array
+        except httpx.ConnectError:
+            raise HTTPException(status_code=502, detail="B2B service unavailable")
