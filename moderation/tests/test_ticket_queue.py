@@ -11,7 +11,7 @@ import uuid
 import pytest
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update, func
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.models import Ticket, TicketKind, TicketStatus, TicketHistory, TicketHistoryAction
@@ -45,7 +45,7 @@ async def test_next_returns_oldest_pending(client, db_session, auth_headers, mod
     db_session.add_all([t1, t2])
     await db_session.flush()
 
-    response = await client.post("/api/v1/tickets/next", headers=auth_headers)
+    response = await client.post("/api/v1/queue/claim", headers=auth_headers)
     assert response.status_code == 200, response.text
     data = response.json()
     assert data["id"] == str(t1.id), "Should get oldest ticket"
@@ -81,12 +81,12 @@ async def test_concurrent_two_moderators_get_different_cards(
     await db_session.flush()
 
     # Moderator 1 claims
-    r1 = await client.post("/api/v1/tickets/next", headers=auth_headers)
+    r1 = await client.post("/api/v1/queue/claim", headers=auth_headers)
     assert r1.status_code == 200, r1.text
     id1 = r1.json()["id"]
 
     # Moderator 2 claims — should get a different ticket
-    r2 = await client.post("/api/v1/tickets/next", headers=second_auth_headers)
+    r2 = await client.post("/api/v1/queue/claim", headers=second_auth_headers)
     assert r2.status_code == 200, r2.text
     id2 = r2.json()["id"]
 
@@ -103,7 +103,7 @@ async def test_concurrent_two_moderators_get_different_cards(
 @pytest.mark.asyncio
 async def test_empty_queue_returns_204(client, db_session, auth_headers):
     """Empty queue returns 204 No Content."""
-    response = await client.post("/api/v1/tickets/next", headers=auth_headers)
+    response = await client.post("/api/v1/queue/claim", headers=auth_headers)
     assert response.status_code == 204, response.text
 
 
@@ -117,7 +117,7 @@ async def test_moderator_already_has_in_review_returns_409(
     await db_session.flush()
 
     # First claim works
-    r1 = await client.post("/api/v1/tickets/next", headers=auth_headers)
+    r1 = await client.post("/api/v1/queue/claim", headers=auth_headers)
     assert r1.status_code == 200, r1.text
 
     # Second claim rejected even though another ticket exists
@@ -125,7 +125,7 @@ async def test_moderator_already_has_in_review_returns_409(
     db_session.add(t2)
     await db_session.flush()
 
-    r2 = await client.post("/api/v1/tickets/next", headers=auth_headers)
+    r2 = await client.post("/api/v1/queue/claim", headers=auth_headers)
     assert r2.status_code == 409, r2.text
 
 
@@ -138,6 +138,6 @@ async def test_priority_ordering_respected(client, db_session, auth_headers, mod
     await db_session.flush()
 
     # Should get the higher priority ticket first
-    response = await client.post("/api/v1/tickets/next", headers=auth_headers)
+    response = await client.post("/api/v1/queue/claim", headers=auth_headers)
     assert response.status_code == 200, response.text
     assert response.json()["id"] == str(t_high.id), "Higher priority should come first"
