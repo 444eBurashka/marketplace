@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 from app.core.dependencies import CurrentBuyer
 from app.db.session import get_db
 from app.models import Address, Buyer, Cart, CartItem, Order, OrderItem, OrderStatus, OrderStatusHistory
-from app.schemas.orders import CancelRequest, CheckoutRequest
+from app.schemas.orders import CancelRequest, CheckoutRequest, CheckoutItemIn
 from app.services import b2b_client
 from shared.errors.http import NotFoundError
 from shared.service_auth import verify_service_key
@@ -23,10 +23,15 @@ DB = Annotated[AsyncSession, Depends(get_db)]
 # ─── US-ORD-01: Checkout ─────────────────────────────────────────────────────
 
 @router.post("/orders", status_code=201)
-async def checkout(body: CheckoutRequest, buyer: CurrentBuyer, db: DB) -> dict:
-    # Идемпотентность по idempotency_key
+async def checkout(
+    body: CheckoutRequest,
+    buyer: CurrentBuyer,
+    db: DB,
+    idempotency_key: uuid.UUID = Header(..., alias="Idempotency-Key"),  # ← заголовок
+) -> dict:
+    # Идемпотентность по idempotency_key из заголовка
     existing = await db.scalar(
-        select(Order).where(Order.idempotency_key == body.idempotency_key)
+        select(Order).where(Order.idempotency_key == idempotency_key)
     )
     if existing:
         return {"id": str(existing.id), "number": existing.number, "status": existing.status.value}
@@ -36,25 +41,50 @@ async def checkout(body: CheckoutRequest, buyer: CurrentBuyer, db: DB) -> dict:
     if not address or address.buyer_id != buyer.id:
         raise HTTPException(status_code=400, detail={"code": "INVALID_ADDRESS", "message": "Address not found"})
 
-    # Собираем items из запроса + обогащаем из B2B
+    if body.items:
+        cart_items_raw = body.items
+    else:
+        # Получаем из корзины покупателя
+        cart = await db.scalar(select(Cart).where(Cart.buyer_id == buyer.id))
+        if not cart:
+            raise HTTPException(status_code=400, detail={"code": "EMPTY_CART", "message": "Cart is empty"})
+        result = await db.execute(select(CartItem).where(CartItem.cart_id == cart.id))
+        db_items = result.scalars().all()
+        cart_items_raw = [CheckoutItemIn(sku_id=i.sku_id, quantity=i.quantity) for i in db_items]
+
     items_to_reserve = []
     order_items_data = []
     subtotal = 0
 
-    for item in body.items:
-        product_data = await b2b_client.get_product(str(item.sku_id))  # упрощение: ищем через sku
-        # В реальности нужен эндпоинт B2B /api/v1/skus/{sku_id}
-        # Для MVP получаем через products, ищем SKU
-        # Здесь предполагаем, что b2b_client.get_product возвращает нужный объект
-        # Для теста — мокаем этот вызов
+    for item in cart_items_raw:
+        # Получаем данные о товаре из B2B
+        product = await b2b_client.get_product_by_sku(str(item.sku_id))  # или get_products с фильтром
+        if not product:
+            raise HTTPException(status_code=400, detail={"code": "PRODUCT_NOT_FOUND"})
 
-        # Добавляем в список резервирования
+        sku = next((s for s in product.get("skus", []) if s["id"] == str(item.sku_id)), None)
+        if not sku:
+            raise HTTPException(status_code=400, detail={"code": "SKU_NOT_FOUND"})
+
+        price = sku.get("price", 0)
+        line_total = price * item.quantity
+        subtotal += line_total
+
         items_to_reserve.append({"sku_id": str(item.sku_id), "quantity": item.quantity})
+        order_items_data.append({
+            "sku_id": item.sku_id,
+            "product_id": uuid.UUID(product["id"]),
+            "name": product.get("title", ""),
+            "sku_attributes": sku.get("attributes", []),
+            "unit_price": price,
+            "quantity": item.quantity,
+            "line_total": line_total,
+        })
 
     # Резервируем в B2B — all-or-nothing
     reserve_result = await b2b_client.reserve(
         order_id=str(uuid.uuid4()),  # временный, заменим после создания Order
-        idempotency_key=str(body.idempotency_key),
+        idempotency_key=idempotency_key,
         items=items_to_reserve,
     )
 
@@ -91,14 +121,35 @@ async def checkout(body: CheckoutRequest, buyer: CurrentBuyer, db: DB) -> dict:
         delivery_cost=0,
         total=subtotal,
     )
-    db.add(order)
+    for oid in order_items_data:
+        db.add(OrderItem(order_id=order.id, **oid))
     await db.flush()
 
     # Записываем историю статусов
     db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.PAID))
 
-    return {"id": str(order.id), "number": order.number, "status": order.status.value}
-
+    return {
+        "id": str(order.id),
+        "number": order.number,
+        "status": order.status.value,
+        "buyer_id": str(order.buyer_id),
+        "subtotal": order.subtotal,
+        "delivery_cost": order.delivery_cost,
+        "total": order.total,
+        "address": order.address_snapshot,
+        "items": [
+            {
+                "sku_id": str(i.sku_id),
+                "product_id": str(i.product_id),
+                "name": i.name,
+                "unit_price": i.unit_price,
+                "quantity": i.quantity,
+                "line_total": i.line_total,
+            }
+            for i in order_items_data  # используем уже собранные данные
+        ],
+        "created_at": order.created_at.isoformat(),
+    }
 
 # ─── US-ORD-02: Просмотр заказов ─────────────────────────────────────────────
 
@@ -107,17 +158,18 @@ async def list_orders(
     buyer: CurrentBuyer,
     db: DB,
     status: str | None = Query(default=None),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=1, ge=1, le=100),
+    offset: int = Query(default=20, ge=1),
 ) -> dict:
     query = select(Order).where(Order.buyer_id == buyer.id)
     if status:
+        count_q = count_q.where(Order.status == OrderStatus(status))
         try:
             query = query.where(Order.status == OrderStatus(status))
         except ValueError:
             raise HTTPException(status_code=400, detail={"code": "INVALID_STATUS", "message": f"Unknown status: {status}"})
-
-    query = query.order_by(Order.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    total_count = await db.scalar(count_q)
+    query = query.order_by(Order.created_at.desc()).offset((limit - 1) * offset).limit(offset)
     result = await db.execute(query)
     orders = result.scalars().all()
 
@@ -126,8 +178,9 @@ async def list_orders(
             {"id": str(o.id), "number": o.number, "status": o.status.value, "total": o.total}
             for o in orders
         ],
-        "page": page,
-        "page_size": page_size,
+        "total_count": total_count,
+        "limit": limit,
+        "offset": offset,
     }
 
 
@@ -148,12 +201,15 @@ async def get_order(order_id: uuid.UUID, buyer: CurrentBuyer, db: DB) -> dict:
         "id": str(order.id),
         "number": order.number,
         "status": order.status.value,
+        "buyer_id": str(order.buyer_id),          # ← ДОБАВЛЕНО
         "subtotal": order.subtotal,
         "delivery_cost": order.delivery_cost,
         "total": order.total,
+        "address": order.address_snapshot,        # ← ДОБАВЛЕНО
         "items": [
             {
                 "sku_id": str(i.sku_id),
+                "product_id": str(i.product_id),  # ← ДОБАВЛЕНО
                 "name": i.name,
                 "unit_price": i.unit_price,
                 "quantity": i.quantity,
@@ -167,8 +223,12 @@ async def get_order(order_id: uuid.UUID, buyer: CurrentBuyer, db: DB) -> dict:
 
 # ─── US-ORD-03: Отмена заказа ────────────────────────────────────────────────
 
-CANCELLABLE_STATUSES = {OrderStatus.CREATED, OrderStatus.PAID}
-
+CANCELLABLE_STATUSES = CANCELLABLE_STATUSES = {
+    OrderStatus.CREATED,
+    OrderStatus.PAID,
+    OrderStatus.ASSEMBLING,   # ← ДОБАВЛЕНО
+    OrderStatus.DELIVERING,   # ← ДОБАВЛЕНО
+}
 
 @router.post("/orders/{order_id}/cancel")
 async def cancel_order(
@@ -195,8 +255,13 @@ async def cancel_order(
         )
 
     # Пытаемся снять резерв в B2B
-    unreserve_status = await b2b_client.unreserve(str(order.id))
-
+    result_items = await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
+    items_for_unreserve = [
+        {"sku_id": str(i.sku_id), "quantity": i.quantity}
+        for i in result_items.scalars().all()
+    ]
+    unreserve_status = await b2b_client.unreserve(str(order.id), items_for_unreserve)
+    
     if unreserve_status in (200, 204):
         order.status = OrderStatus.CANCELLED
         order.cancelled_at = datetime.now(UTC)

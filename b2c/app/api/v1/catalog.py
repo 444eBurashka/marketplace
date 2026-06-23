@@ -12,7 +12,7 @@ router = APIRouter()
 
 # ─── US-CAT-01: Каталог с фильтрами ─────────────────────────────────────────
 
-ALLOWED_SORT = {"price_asc", "price_desc", "created_at_desc", "popular"}
+ALLOWED_SORT = {"price_asc", "price_desc", "new", "popularity"}
 
 
 @router.get("/products")
@@ -22,10 +22,10 @@ async def list_products(
     max_price: int | None = Query(default=None),
     in_stock: bool | None = Query(default=None),
     sort: str = Query(default="created_at_desc"),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=1, ge=1),
+    offset: int = Query(default=20, ge=1, le=100),
     # US-CAT-02: поиск
-    search: str | None = Query(default=None, min_length=None),
+    q: str | None = Query(default=None, min_length=None),
 ) -> dict:
     # Валидация sort
     if sort not in ALLOWED_SORT:
@@ -38,7 +38,7 @@ async def list_products(
         )
 
     # US-CAT-02: поиск — минимальная длина 3 символа
-    if search is not None and len(search) < 3:
+    if q is not None and len(q) < 3:
         raise HTTPException(
             status_code=400,
             detail={"code": "QUERY_TOO_SHORT", "message": "search must be at least 3 characters"},
@@ -46,8 +46,8 @@ async def list_products(
 
     params: dict = {
         "sort": sort,
-        "page": page,
-        "page_size": page_size,
+        "limit": limit,
+        "offset": offset,
         # Видимость: только MODERATED, не deleted, in-stock
         "status": "MODERATED",
         "deleted": False,
@@ -61,8 +61,8 @@ async def list_products(
         params["max_price"] = max_price
     if in_stock is not None:
         params["in_stock"] = in_stock
-    if search:
-        params["search"] = search
+    if q:
+        params["q"] = q
 
     return await b2b_client.get_products(params)
 
@@ -72,13 +72,13 @@ async def list_products(
 @router.get("/catalog/facets")
 async def get_facets(
     category_id: uuid.UUID | None = Query(default=None),
-    search: str | None = Query(default=None),
+    q: str | None = Query(default=None),
 ) -> dict:
     params: dict = {"status": "MODERATED", "deleted": False, "active_quantity_gt": 0}
     if category_id:
         params["category_id"] = str(category_id)
-    if search:
-        params["search"] = search
+    if q:
+        params["q"] = q
     return await b2b_client.get_catalog_facets(params)
 
 
@@ -124,8 +124,7 @@ async def get_similar_products(product_id: uuid.UUID) -> dict:
     if category_id:
         params["category_id"] = category_id
 
-    result = await b2b_client.get_products(params)
-    items = [p for p in result.get("items", []) if p["id"] != str(product_id)][:8]
+    items = await b2b_client.get_similar_products(str(product_id))
 
     # Если меньше 8 — fallback на родительскую категорию (запрос без category_id)
     if len(items) < 8:
@@ -140,15 +139,19 @@ async def get_similar_products(product_id: uuid.UUID) -> dict:
                 if len(items) >= 8:
                     break
 
-    return {"items": items[:8]}
+    return items[:8]
 
 
 # ─── US-CAT-05: Навигация по категориям ──────────────────────────────────────
 
-@router.get("/categories")
-async def get_category_tree() -> dict:
+@router.get("/categories")              # плоский список
+async def list_categories() -> list:
     flat = await b2b_client.get_categories()
-    # Строим дерево из плоского списка
+    return flat                         # plain array CategoryRef[]
+
+@router.get("/categories/tree")         # дерево — НОВЫЙ маршрут
+async def get_category_tree() -> list:
+    flat = await b2b_client.get_categories()
     by_id = {c["id"]: {**c, "children": []} for c in flat}
     roots = []
     for cat in flat:
@@ -157,16 +160,7 @@ async def get_category_tree() -> dict:
             by_id[pid]["children"].append(by_id[cat["id"]])
         elif not pid:
             roots.append(by_id[cat["id"]])
-    return {"categories": roots}
-
-
-@router.get("/categories/{category_id}")
-async def get_category(category_id: uuid.UUID) -> dict:
-    flat = await b2b_client.get_categories()
-    found = next((c for c in flat if c["id"] == str(category_id)), None)
-    if not found:
-        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Category not found"})
-    return found
+    return roots 
 
 
 @router.get("/categories/breadcrumbs")
@@ -221,3 +215,12 @@ async def get_breadcrumbs(
         current_id = cat.get("parent_id")
 
     return {"breadcrumbs": breadcrumbs}
+
+
+@router.get("/categories/{category_id}")
+async def get_category(category_id: uuid.UUID) -> dict:
+    flat = await b2b_client.get_categories()
+    found = next((c for c in flat if c["id"] == str(category_id)), None)
+    if not found:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Category not found"})
+    return found
