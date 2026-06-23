@@ -116,7 +116,7 @@ async def test_hard_block_transitions_to_terminal_and_emits_event(
 
     with _mock_hard_b2b_post():
         r2 = await client.post(
-            f"/api/v1/tickets/{ticket_id}/decline",
+            f"/api/v1/tickets/{ticket_id}/block",
             json={
                 "blocking_reason_ids": [str(reason.id)],
                 "comment": "Counterfeit product",
@@ -178,7 +178,7 @@ async def test_hard_block_event_carries_hard_block_true(
         return_value=mock_client,
     ):
         r2 = await client.post(
-            f"/api/v1/tickets/{ticket_id}/decline",
+            f"/api/v1/tickets/{ticket_id}/block",
             json={
                 "blocking_reason_ids": [str(reason.id)],
                 "comment": "Hard blocked",
@@ -219,7 +219,7 @@ async def test_any_modify_on_hard_blocked_returns_403(
     # Hard block the ticket first
     with _mock_hard_b2b_post():
         r2 = await client.post(
-            f"/api/v1/tickets/{ticket_id}/decline",
+            f"/api/v1/tickets/{ticket_id}/block",
             json={"blocking_reason_ids": [str(reason.id)]},
             headers=auth_headers,
         )
@@ -250,7 +250,7 @@ async def test_any_modify_on_hard_blocked_returns_403(
     # Try decline again -> 403
     with _mock_hard_b2b_post():
         r5 = await client.post(
-            f"/api/v1/tickets/{ticket_id}/decline",
+            f"/api/v1/tickets/{ticket_id}/block",
             json={"blocking_reason_ids": [str(reason.id)]},
             headers=auth_headers,
         )
@@ -284,7 +284,7 @@ async def test_edited_event_on_hard_blocked_is_ignored(
 
     with _mock_hard_b2b_post():
         r2 = await client.post(
-            f"/api/v1/tickets/{ticket_id}/decline",
+            f"/api/v1/tickets/{ticket_id}/block",
             json={"blocking_reason_ids": [str(reason.id)]},
             headers=auth_headers,
         )
@@ -348,7 +348,7 @@ async def test_deleted_event_removes_hard_blocked(
 
     with _mock_hard_b2b_post():
         r2 = await client.post(
-            f"/api/v1/tickets/{ticket_id}/decline",
+            f"/api/v1/tickets/{ticket_id}/block",
             json={"blocking_reason_ids": [str(reason.id)], "comment": "Hard blocked"},
             headers=auth_headers,
         )
@@ -397,7 +397,7 @@ async def test_decline_mixed_soft_hard_reasons_returns_400(
     # Try decline with mixed reasons -> 400
     with _mock_hard_b2b_post():
         r2 = await client.post(
-            f"/api/v1/tickets/{ticket_id}/decline",
+            f"/api/v1/tickets/{ticket_id}/block",
             json={
                 "blocking_reason_ids": [str(hard_reason.id), str(soft_reason.id)],
             },
