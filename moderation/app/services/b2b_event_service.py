@@ -81,31 +81,40 @@ async def _handle_edited(payload: dict, db: AsyncSession) -> dict:
     """
     PRODUCT_EDITED:
     - Active PENDING/IN_REVIEW ticket -> update json_after
+    - MODERATED/BLOCKED ticket -> reopen to PENDING, update snapshots
     - Otherwise -> new EDIT ticket in PENDING
     """
     product_id = uuid.UUID(payload["product_id"])
     json_before = payload.get("json_before")
     json_after = payload.get("json_after")
 
-    active_ticket = await db.scalar(
+    existing_ticket = await db.scalar(
         select(Ticket).where(
             Ticket.product_id == product_id,
-            Ticket.status.in_([TicketStatus.PENDING, TicketStatus.IN_REVIEW]),
+            Ticket.status.in_([
+                TicketStatus.PENDING,
+                TicketStatus.IN_REVIEW,
+                TicketStatus.MODERATED,
+                TicketStatus.BLOCKED,
+            ]),
         ).limit(1)
     )
 
-    if active_ticket is not None:
-        active_ticket.json_after = json_after
+    if existing_ticket is not None:
+        existing_ticket.json_after = json_after
         if json_before:
-            active_ticket.json_before = json_before
+            existing_ticket.json_before = json_before
+        # Reopen MODERATED/BLOCKED back to PENDING
+        if existing_ticket.status in (TicketStatus.MODERATED, TicketStatus.BLOCKED):
+            existing_ticket.status = TicketStatus.PENDING
         await db.flush()
         db.add(TicketHistory(
-            ticket_id=active_ticket.id,
+            ticket_id=existing_ticket.id,
             action=TicketHistoryAction.CREATED,
             comment="Ticket updated from PRODUCT_EDITED event (json_after refreshed)",
         ))
         await db.flush()
-        return {"id": str(active_ticket.id), "product_id": str(product_id), "status": active_ticket.status.value}
+        return {"id": str(existing_ticket.id), "product_id": str(product_id), "status": existing_ticket.status.value}
 
     # Check if product has HARD_BLOCKED ticket (terminal) -> silently ignore edit
     hard_blocked = await db.scalar(
