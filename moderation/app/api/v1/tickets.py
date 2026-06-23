@@ -95,46 +95,14 @@ async def block_ticket_endpoint(
     moderator: CurrentModerator,
     db: DB,
 ) -> TicketDetailResponse:
-    """Soft block a ticket: IN_REVIEW -> BLOCKED + field reports + B2B event."""
-    ticket_id_uuid = uuid.UUID(ticket_id)
-    # Terminal guard: HARD_BLOCKED tickets cannot be soft blocked
-    await _check_ticket_not_terminal(ticket_id_uuid, db)
-    ticket = await soft_block_ticket(
-        ticket_id=ticket_id_uuid,
-        moderator_id=moderator.id,
-        blocking_reason_ids=body.blocking_reason_ids,
-        comment=body.comment,
-        field_reports=[fr.model_dump() for fr in body.field_reports],
-        db=db,
-    )
-    return await _load_ticket_for_response(ticket, db)
+    """Block a ticket: routes to soft or hard block based on reason flags.
 
-
-@router.post(
-    "/{ticket_id}/decline",
-    status_code=200,
-    responses={
-        200: {"model": TicketDetailResponse},
-        400: {"description": "Invalid blocking reason (mixed soft+hard, or unknown)"},
-        403: {"description": "Not your ticket or HARD_BLOCKED terminal"},
-        404: {"description": "Ticket not found"},
-        409: {"description": "Invalid state (not IN_REVIEW)"},
-    },
-)
-async def decline_ticket_endpoint(
-    ticket_id: str,
-    body: BlockDecisionRequest,
-    moderator: CurrentModerator,
-    db: DB,
-) -> TicketDetailResponse:
-    """Decline a ticket: routes to soft or hard block based on reason flags.
-
-    - If ANY blocking_reason has hard_block=True -> hard block (HARD_BLOCKED, terminal)
+    - If ALL blocking_reasons have hard_block=True -> hard block (HARD_BLOCKED, terminal)
     - If ALL blocking reasons are soft -> soft block (BLOCKED)
     - Mixing soft+hard reasons returns 400.
     """
     ticket_id_uuid = uuid.UUID(ticket_id)
-    # Terminal guard
+    # Terminal guard: HARD_BLOCKED tickets cannot be modified
     await _check_ticket_not_terminal(ticket_id_uuid, db)
 
     # Load blocking reasons to determine route
