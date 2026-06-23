@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -15,11 +15,10 @@ async def get_next_card_for_moderator(
 ) -> Ticket | None:
     """Get next PENDING ticket from queue and assign to moderator.
 
-    Uses atomic UPDATE ... RETURNING for race-condition safety:
-    - SELECT oldest PENDING ticket
-    - Atomic UPDATE with WHERE status=PENDING (optimistic lock)
-    - If another request claimed it first, retries with next ticket
-    - Works on both PostgreSQL and SQLite
+    Uses SELECT ... FOR UPDATE SKIP LOCKED for race-condition safety:
+    - Skips tickets already locked by concurrent transactions
+    - Atomic claim inside the active request transaction
+    - Target DB: PostgreSQL (SKIP LOCKED); on SQLite the lock is a no-op.
 
     Returns:
         Ticket if found, None if queue is empty.
@@ -54,38 +53,26 @@ async def get_next_card_for_moderator(
         ))
     await db.flush()
 
-    # 3. Atomic claim: UPDATE ... RETURNING with optimistic lock
+    # 3. Claim next ticket with FOR UPDATE SKIP LOCKED inside active transaction
     claim_expires_at = now + timedelta(minutes=settings.claim_timeout_minutes)
 
-    for _ in range(3):  # retry loop for race conditions
-        result = await db.execute(
-            select(Ticket.id)
-            .where(Ticket.status == TicketStatus.PENDING)
-            .order_by(Ticket.queue_priority.asc(), Ticket.created_at.asc())
-            .limit(1)
-        )
-        candidate_id = result.scalar_one_or_none()
-        if candidate_id is None:
-            return None  # queue is empty
+    result = await db.execute(
+        select(Ticket)
+        .where(Ticket.status == TicketStatus.PENDING)
+        .order_by(Ticket.queue_priority.asc(), Ticket.created_at.asc())
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
+    ticket = result.scalar_one_or_none()
+    if ticket is None:
+        return None  # queue is empty
 
-        result = await db.execute(
-            update(Ticket)
-            .where(Ticket.id == candidate_id)
-            .where(Ticket.status == TicketStatus.PENDING)  # optimistic lock
-            .values(
-                status=TicketStatus.IN_REVIEW,
-                assigned_moderator_id=moderator_id,
-                claimed_at=now,
-                claim_expires_at=claim_expires_at,
-            )
-            .returning(Ticket)
-        )
-        ticket = result.scalar_one_or_none()
-        if ticket is not None:
-            break  # successfully claimed
-        # Another moderator claimed it first — retry with next ticket
-    else:
-        return None  # exhausted retries (unlikely)
+    # Assign (we hold the lock — no race possible)
+    ticket.status = TicketStatus.IN_REVIEW
+    ticket.assigned_moderator_id = moderator_id
+    ticket.claimed_at = now
+    ticket.claim_expires_at = claim_expires_at
+    await db.flush()
 
     # 4. History
     db.add(TicketHistory(

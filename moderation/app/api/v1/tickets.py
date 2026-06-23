@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -11,7 +11,6 @@ from app.core.dependencies import CurrentModerator
 from app.db.session import get_db
 from app.models import Ticket, TicketStatus, BlockingReason
 from app.schemas.tickets import TicketDetailResponse, BlockDecisionRequest
-from app.services.ticket_service import get_next_card_for_moderator
 from app.services.ticket_approve_service import approve_ticket
 from app.services.ticket_block_service import soft_block_ticket
 from app.services.ticket_hard_block_service import hard_block_ticket
@@ -48,30 +47,6 @@ async def _check_ticket_not_terminal(ticket_id: uuid.UUID, db: AsyncSession) -> 
     if ticket.status == TicketStatus.HARD_BLOCKED:
         raise ForbiddenError(detail="Ticket is HARD_BLOCKED and cannot be modified")
     return ticket
-
-
-@router.post(
-    "/next",
-    status_code=200,
-    responses={
-        200: {"model": TicketDetailResponse, "description": "Next ticket in queue"},
-        204: {"description": "Queue is empty"},
-        409: {"description": "Moderator already has IN_REVIEW ticket"},
-    },
-)
-async def get_next_ticket(
-    moderator: CurrentModerator,
-    db: DB,
-) -> TicketDetailResponse | None:
-    """Get next PENDING ticket from moderation queue."""
-    ticket = await get_next_card_for_moderator(
-        moderator_id=moderator.id,
-        db=db,
-    )
-    if ticket is None:
-        return Response(status_code=204)
-
-    return await _load_ticket_for_response(ticket, db)
 
 
 @router.post(

@@ -4,6 +4,7 @@ import app.api.v1.moderators as moderators
 import app.api.v1.b2b_events as b2b_events
 import app.api.v1.tickets as tickets
 import app.api.v1.blocking_reasons as blocking_reasons
+import app.api.v1.queue as queue
 
 api_router = APIRouter()
 
@@ -12,3 +13,4 @@ api_router.include_router(moderators.router, prefix="/moderators", tags=["Modera
 api_router.include_router(b2b_events.router, prefix="/b2b/events", tags=["B2B Events"])
 api_router.include_router(tickets.router, prefix="/tickets", tags=["Tickets"])
 api_router.include_router(blocking_reasons.router, prefix="/blocking-reasons", tags=["Blocking Reasons"])
+api_router.include_router(queue.router, prefix="/queue", tags=["Queue"])
