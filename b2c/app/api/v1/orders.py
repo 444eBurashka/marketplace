@@ -244,11 +244,9 @@ async def get_order(order_id: uuid.UUID, buyer: CurrentBuyer, db: DB) -> dict:
 
 # ─── US-ORD-03: Отмена заказа ────────────────────────────────────────────────
 
-CANCELLABLE_STATUSES = CANCELLABLE_STATUSES = {
+CANCELLABLE_STATUSES = {
     OrderStatus.CREATED,
     OrderStatus.PAID,
-    OrderStatus.ASSEMBLING,   # ← ДОБАВЛЕНО
-    OrderStatus.DELIVERING,   # ← ДОБАВЛЕНО
 }
 
 @router.post("/orders/{order_id}/cancel")

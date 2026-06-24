@@ -202,18 +202,18 @@ async def test_other_user_order_returns_404_not_403(client: AsyncClient, db_sess
 # ─── US-ORD-03: Cancel ───────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(reason="ASSEMBLING is cancellable per US-ORD-03 contract")
 @pytest.mark.asyncio
-async def test_cancel_assembling_order_returns_409(client: AsyncClient, db_session: AsyncSession):
+async def test_cancel_paid_order_transitions_to_cancelled(client: AsyncClient, db_session: AsyncSession):
+    """Happy path: отмена PAID заказа → CANCELLED."""
     buyer, _, _, token = await create_buyer_with_address(db_session)
     order = Order(
-        number="ORD-TEST-002",
+        number="ORD-CANCEL-001",
         buyer_id=buyer.id,
         idempotency_key=uuid.uuid4(),
-        status=OrderStatus.ASSEMBLING,
-        address_snapshot={},
-        subtotal=0,
-        total=0,
+        status=OrderStatus.PAID,
+        address_snapshot={"city": "Moscow", "street": "Test", "building": "1", "zip_code": "101000"},
+        subtotal=1000,
+        total=1000,
     )
     db_session.add(order)
     await db_session.flush()
@@ -224,5 +224,88 @@ async def test_cancel_assembling_order_returns_409(client: AsyncClient, db_sessi
             json={"reason": "changed mind"},
             headers={"Authorization": f"Bearer {token}"},
         )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "CANCELLED"
+
+
+@pytest.mark.asyncio
+async def test_unreserve_failure_transitions_to_cancel_pending(client: AsyncClient, db_session: AsyncSession):
+    """B2B недоступен → CANCEL_PENDING."""
+    buyer, _, _, token = await create_buyer_with_address(db_session)
+    order = Order(
+        number="ORD-CANCEL-002",
+        buyer_id=buyer.id,
+        idempotency_key=uuid.uuid4(),
+        status=OrderStatus.PAID,
+        address_snapshot={"city": "Moscow", "street": "Test", "building": "1", "zip_code": "101000"},
+        subtotal=1000,
+        total=1000,
+    )
+    db_session.add(order)
+    await db_session.flush()
+
+    with patch("app.services.b2b_client.unreserve", AsyncMock(return_value=503)):
+        r = await client.post(
+            f"/api/v1/orders/{order.id}/cancel",
+            json={"reason": "changed mind"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "CANCEL_PENDING"
+
+
+@pytest.mark.asyncio
+async def test_cancel_assembling_order_returns_409(client: AsyncClient, db_session: AsyncSession):
+    """ASSEMBLING → 409 CANCEL_NOT_ALLOWED."""
+    buyer, _, _, token = await create_buyer_with_address(db_session)
+    order = Order(
+        number="ORD-CANCEL-003",
+        buyer_id=buyer.id,
+        idempotency_key=uuid.uuid4(),
+        status=OrderStatus.ASSEMBLING,
+        address_snapshot={},
+        subtotal=0,
+        total=0,
+    )
+    db_session.add(order)
+    await db_session.flush()
+
+    r = await client.post(
+        f"/api/v1/orders/{order.id}/cancel",
+        json={"reason": "changed mind"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
     assert r.status_code == 409
     assert r.json()["code"] == "CANCEL_NOT_ALLOWED"
+    assert r.json()["current_status"] == "ASSEMBLING"
+
+
+@pytest.mark.asyncio
+async def test_other_user_cancel_returns_404(client: AsyncClient, db_session: AsyncSession):
+    """Чужой заказ при отмене → 404 (IDOR)."""
+    buyer1, _, _, token1 = await create_buyer_with_address(db_session)
+    buyer2 = Buyer(email="other2@test.com", hashed_password=hash_password("pass1234"))
+    db_session.add(buyer2)
+    await db_session.flush()
+    order = Order(
+        number="ORD-CANCEL-004",
+        buyer_id=buyer2.id,
+        idempotency_key=uuid.uuid4(),
+        status=OrderStatus.PAID,
+        address_snapshot={},
+        subtotal=1000,
+        total=1000,
+    )
+    db_session.add(order)
+    await db_session.flush()
+
+    r = await client.post(
+        f"/api/v1/orders/{order.id}/cancel",
+        json={"reason": "hack attempt"},
+        headers={"Authorization": f"Bearer {token1}"},
+    )
+    assert r.status_code == 404
