@@ -130,7 +130,7 @@ async def test_edited_updates_in_review(client, db_session):
 
 @pytest.mark.asyncio
 async def test_deleted_archived(client, db_session):
-    """PRODUCT_DELETED closes all open PENDING tickets -> HARD_BLOCKED."""
+    """PRODUCT_DELETED removes all tickets for that product."""
     pid = uuid.uuid4()
     body = _make_request("PRODUCT_CREATED", product_id=str(pid))
     r1 = await client.post(
@@ -144,10 +144,11 @@ async def test_deleted_archived(client, db_session):
     )
     assert r2.status_code == 202, r2.text
     data = r2.json()
-    assert len(data["closed_tickets"]) == 1
+    assert len(data["deleted_tickets"]) == 1
 
+    # Ticket must be fully deleted — not found
     ticket = await db_session.scalar(select(Ticket).where(Ticket.product_id == pid))
-    assert ticket.status == TicketStatus.HARD_BLOCKED
+    assert ticket is None, "Ticket should be deleted after PRODUCT_DELETED"
 
 
 @pytest.mark.asyncio

@@ -331,7 +331,7 @@ async def test_edited_event_on_hard_blocked_is_ignored(
 async def test_deleted_event_removes_hard_blocked(
     client, db_session, auth_headers, moderator,
 ):
-    """PRODUCT_DELETED event on HARD_BLOCKED product -> no error, no change."""
+    """PRODUCT_DELETED event on HARD_BLOCKED product -> ticket is deleted."""
     reason = _create_hard_reason()
     db_session.add(reason)
     await db_session.flush()
@@ -368,11 +368,14 @@ async def test_deleted_event_removes_hard_blocked(
         headers={"X-Service-Key": settings.service_key},
     )
     assert r3.status_code == 202, r3.text
+    data = r3.json()
+    assert str(ticket_id) in data["deleted_tickets"]
+    assert data["deleted_tickets"] == [str(ticket_id)]
 
-    # HARD_BLOCKED ticket should still exist unchanged
-    await db_session.refresh(ticket)
-    assert ticket.status == TicketStatus.HARD_BLOCKED
-    assert ticket.decision_comment is not None
+    # Ticket should be deleted — not found
+    stmt = select(Ticket).where(Ticket.id == ticket.id)
+    deleted = await db_session.scalar(stmt)
+    assert deleted is None, "Ticket should be deleted after PRODUCT_DELETED"
 
 
 @pytest.mark.asyncio
