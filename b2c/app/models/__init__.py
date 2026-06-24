@@ -183,9 +183,6 @@ class CartItem(Base):
 
     cart: Mapped["Cart"] = relationship(back_populates="items")
 
-class CartItemUpdate(Base):
-    quantity: int
-
 
 # ─────────────────────────────────────────────
 # Favorite / Subscription

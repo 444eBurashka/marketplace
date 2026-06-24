@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import CurrentBuyer, OptionalBuyer
 from app.db.session import get_db
-from app.models import Buyer, Cart, CartItem, CartItemUpdate
-from app.schemas.cart import CartItemIn
+from app.models import Buyer, Cart, CartItem
+from app.schemas.cart import CartItemIn, CartItemOut, CartOut, CartItemUpdate
 from app.services import b2b_client
 
 router = APIRouter()
@@ -69,61 +69,82 @@ async def add_to_cart(
     return {"id": str(item.id), "sku_id": str(body.sku_id), "quantity": item.quantity}
 
 
-@router.get("/cart")
+@router.get("/cart", response_model=CartOut)
 async def get_cart(
     buyer: OptionalBuyer,
     db: DB,
     x_session_id: str | None = Header(default=None),
-) -> dict:
+) -> CartOut:
     if buyer:
         cart = await db.scalar(select(Cart).where(Cart.buyer_id == buyer.id))
     elif x_session_id:
         cart = await db.scalar(select(Cart).where(Cart.session_id == x_session_id))
     else:
-        return {"items": [], "total_amount": 0}
+        return CartOut(items=[], total_amount=0)
 
     if not cart:
-        return {"items": [], "total_amount": 0}
+        return CartOut(items=[], total_amount=0)
 
     result = await db.execute(select(CartItem).where(CartItem.cart_id == cart.id))
     items_db = result.scalars().all()
 
-    enriched = []
+    enriched: list[CartItemOut] = []
     total_amount = 0
 
     for item in items_db:
         product = await b2b_client.get_product(str(item.product_id))
-        item_out: dict = {
-            "id": str(item.id),
-            "sku_id": str(item.sku_id),
-            "product_id": str(item.product_id),
-            "quantity": item.quantity,
-            "available": True,
-            "unavailable_reason": None,
-        }
 
         if not product or product.get("status") != "MODERATED" or product.get("deleted"):
-            item_out["available"] = False
-            item_out["unavailable_reason"] = item.unavailable_reason or "PRODUCT_BLOCKED"
+            enriched.append(CartItemOut(
+                id=item.id,
+                sku_id=item.sku_id,
+                product_id=item.product_id,
+                quantity=item.quantity,
+                available=False,
+                unavailable_reason="PRODUCT_BLOCKED",
+            ))
+            continue
+
+        sku = next((s for s in product.get("skus", []) if s["id"] == str(item.sku_id)), None)
+        if not sku:
+            enriched.append(CartItemOut(
+                id=item.id,
+                sku_id=item.sku_id,
+                product_id=item.product_id,
+                quantity=item.quantity,
+                available=False,
+                unavailable_reason="SKU_NOT_FOUND",
+            ))
+            continue
+
+        price = sku.get("price", 0)
+        qty_available = sku.get("quantity", 0) - sku.get("reserved_quantity", 0)
+        title = product.get("title") or product.get("name", "")
+
+        if qty_available <= 0:
+            enriched.append(CartItemOut(
+                id=item.id,
+                sku_id=item.sku_id,
+                product_id=item.product_id,
+                quantity=item.quantity,
+                available=False,
+                unavailable_reason="OUT_OF_STOCK",
+                title=title,
+                price=price,
+            ))
         else:
-            sku = next((s for s in product.get("skus", []) if s["id"] == str(item.sku_id)), None)
-            if sku:
-                price = sku.get("price", 0)
-                qty_available = sku.get("quantity", 0) - sku.get("reserved_quantity", 0)
-                item_out["name"] = product.get("title") or product.get("name")
-                item_out["unit_price"] = price
-                item_out["line_total"] = price * item.quantity
-                item_out["available_quantity"] = max(0, qty_available)
-                item_out["is_available"] = qty_available > 0
+            total_amount += price * item.quantity
+            enriched.append(CartItemOut(
+                id=item.id,
+                sku_id=item.sku_id,
+                product_id=item.product_id,
+                quantity=item.quantity,
+                available=True,
+                title=title,
+                price=price,
+            ))
 
-        enriched.append(item_out)
-
-    return {
-        "items": enriched,
-        "items_count": len(enriched),
-        "subtotal": total_amount,
-        "is_valid": all(i.get("available", True) for i in enriched),
-    }
+    return CartOut(items=enriched, total_amount=total_amount)
 
 @router.delete("/cart/items/{sku_id}", status_code=204)
 async def remove_cart_item(

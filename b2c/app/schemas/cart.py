@@ -29,7 +29,7 @@ class SubscriptionOut(BaseModel):
 
 class CartItemIn(BaseModel):
     sku_id: uuid.UUID
-    product_id: uuid.UUID | None = None
+    product_id: uuid.UUID
     quantity: int = 1
 
 
@@ -48,3 +48,8 @@ class CartItemOut(BaseModel):
 class CartOut(BaseModel):
     items: list[CartItemOut]
     total_amount: int       # сумма только доступных позиций
+
+
+class CartItemUpdate(BaseModel):
+    """Body for PATCH /cart/items/{sku_id}"""
+    quantity: int
