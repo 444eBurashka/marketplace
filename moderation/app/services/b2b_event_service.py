@@ -148,25 +148,14 @@ async def _handle_edited(payload: dict, db: AsyncSession) -> dict:
 
 
 async def _handle_deleted(payload: dict, db: AsyncSession) -> dict:
-    """PRODUCT_DELETED -> close all PENDING/IN_REVIEW tickets."""
+    """PRODUCT_DELETED -> delete ALL tickets + cascade (history, field_reports)."""
     product_id = uuid.UUID(payload["product_id"])
     result = await db.execute(
-        select(Ticket).where(
-            Ticket.product_id == product_id,
-            Ticket.status.in_([TicketStatus.PENDING, TicketStatus.IN_REVIEW]),
-        )
+        select(Ticket).where(Ticket.product_id == product_id)
     )
     tickets = result.scalars().all()
-    closed_ids = []
+    deleted_ids = [str(t.id) for t in tickets]
     for ticket in tickets:
-        ticket.status = TicketStatus.HARD_BLOCKED
-        ticket.decision_comment = "Product deleted by seller"
-        ticket.decision_at = datetime.now(UTC)
-        db.add(TicketHistory(
-            ticket_id=ticket.id,
-            action=TicketHistoryAction.RELEASED,
-            comment="Ticket auto-closed due to PRODUCT_DELETED event",
-        ))
-        closed_ids.append(str(ticket.id))
+        await db.delete(ticket)
     await db.flush()
-    return {"closed_tickets": closed_ids, "product_id": str(product_id)}
+    return {"deleted_tickets": deleted_ids, "product_id": str(product_id)}

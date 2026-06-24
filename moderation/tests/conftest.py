@@ -1,4 +1,9 @@
+import sys
 import uuid
+from pathlib import Path
+
+# Ensure `shared` package is importable
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import pytest
 import pytest_asyncio
