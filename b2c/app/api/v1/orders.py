@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Header
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -158,18 +158,21 @@ async def list_orders(
     buyer: CurrentBuyer,
     db: DB,
     status: str | None = Query(default=None),
-    limit: int = Query(default=1, ge=1, le=100),
-    offset: int = Query(default=20, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
 ) -> dict:
     query = select(Order).where(Order.buyer_id == buyer.id)
+    count_q = select(func.count()).select_from(Order).where(Order.buyer_id == buyer.id)
+
     if status:
-        count_q = count_q.where(Order.status == OrderStatus(status))
         try:
             query = query.where(Order.status == OrderStatus(status))
+            count_q = count_q.where(Order.status == OrderStatus(status))
         except ValueError:
             raise HTTPException(status_code=400, detail={"code": "INVALID_STATUS", "message": f"Unknown status: {status}"})
+
     total_count = await db.scalar(count_q)
-    query = query.order_by(Order.created_at.desc()).offset((limit - 1) * offset).limit(offset)
+    query = query.order_by(Order.created_at.desc()).offset(offset).limit(limit)
     result = await db.execute(query)
     orders = result.scalars().all()
 
@@ -223,11 +226,9 @@ async def get_order(order_id: uuid.UUID, buyer: CurrentBuyer, db: DB) -> dict:
 
 # ─── US-ORD-03: Отмена заказа ────────────────────────────────────────────────
 
-CANCELLABLE_STATUSES = CANCELLABLE_STATUSES = {
+CANCELLABLE_STATUSES = {
     OrderStatus.CREATED,
     OrderStatus.PAID,
-    OrderStatus.ASSEMBLING,   # ← ДОБАВЛЕНО
-    OrderStatus.DELIVERING,   # ← ДОБАВЛЕНО
 }
 
 @router.post("/orders/{order_id}/cancel")
