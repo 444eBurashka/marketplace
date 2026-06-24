@@ -81,7 +81,7 @@ async def _handle_edited(payload: dict, db: AsyncSession) -> dict:
     """
     PRODUCT_EDITED:
     - Active PENDING/IN_REVIEW ticket -> update json_after
-    - MODERATED/BLOCKED ticket -> reopen to PENDING, update snapshots
+    - APPROVED/BLOCKED ticket -> reopen to PENDING, update snapshots
     - Otherwise -> new EDIT ticket in PENDING
     """
     product_id = uuid.UUID(payload["product_id"])
@@ -94,7 +94,7 @@ async def _handle_edited(payload: dict, db: AsyncSession) -> dict:
             Ticket.status.in_([
                 TicketStatus.PENDING,
                 TicketStatus.IN_REVIEW,
-                TicketStatus.MODERATED,
+                TicketStatus.APPROVED,
                 TicketStatus.BLOCKED,
             ]),
         ).limit(1)
@@ -104,8 +104,8 @@ async def _handle_edited(payload: dict, db: AsyncSession) -> dict:
         existing_ticket.json_after = json_after
         if json_before:
             existing_ticket.json_before = json_before
-        # Reopen MODERATED/BLOCKED back to PENDING
-        if existing_ticket.status in (TicketStatus.MODERATED, TicketStatus.BLOCKED):
+        # Reopen APPROVED/BLOCKED back to PENDING
+        if existing_ticket.status in (TicketStatus.APPROVED, TicketStatus.BLOCKED):
             existing_ticket.status = TicketStatus.PENDING
         await db.flush()
         db.add(TicketHistory(
