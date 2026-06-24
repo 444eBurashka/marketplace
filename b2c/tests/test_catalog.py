@@ -83,9 +83,18 @@ async def test_empty_results_returns_200(client: AsyncClient):
 MOCK_PRODUCT = {
     "id": PRODUCT_ID, "title": "Phone", "slug": "phone", "description": "desc",
     "category_id": CATEGORY_ID, "status": "MODERATED", "deleted": False,
-    "images": [],
+    "images": [{"url": "https://example.com/img.jpg"}],
     "skus": [{"id": SKU_ID, "code": "SKU1", "price": 1000, "cost_price": 500,
               "discount": 0, "quantity": 10, "reserved_quantity": 0,
+              "is_active": True, "attributes": []}],
+}
+
+MOCK_PRODUCT_NO_STOCK = {
+    "id": PRODUCT_ID, "title": "Phone", "slug": "phone", "description": "desc",
+    "category_id": CATEGORY_ID, "status": "MODERATED", "deleted": False,
+    "images": [],
+    "skus": [{"id": SKU_ID, "code": "SKU1", "price": 1000, "cost_price": 500,
+              "discount": 10, "quantity": 0, "reserved_quantity": 0,
               "is_active": True, "attributes": []}],
 }
 
@@ -97,7 +106,21 @@ async def test_product_card_returns_full_data_with_skus(client: AsyncClient):
         r = await client.get(f"/api/v1/catalog/products/{PRODUCT_ID}")
         assert r.status_code == 200
         data = r.json()
+        # Поля карточки товара
+        assert data["name"] == "Phone"
+        assert data["min_price"] == 1000
+        assert data["has_stock"] is True
+        assert data["slug"] == "phone"
+        assert "description" in data
+        assert "images" in data
+        # SKU с полным набором полей
         assert "skus" in data
+        sku = data["skus"][0]
+        assert sku["id"] == SKU_ID
+        assert sku["price"] == 1000
+        assert sku["discount"] == 0
+        assert sku["available_quantity"] == 10
+        assert sku["in_stock"] is True
 
 
 @pytest.mark.asyncio
@@ -109,6 +132,7 @@ async def test_cost_price_absent_in_response(client: AsyncClient):
         skus = r.json().get("skus", [])
         assert len(skus) > 0
         assert "cost_price" not in skus[0]
+        assert "reserved_quantity" not in skus[0]
 
 
 @pytest.mark.asyncio
@@ -118,3 +142,20 @@ async def test_blocked_product_returns_404(client: AsyncClient):
         mock_get.return_value = blocked
         r = await client.get(f"/api/v1/catalog/products/{PRODUCT_ID}")
         assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_sku_without_stock_is_shown_as_unavailable(client: AsyncClient):
+    """SKU без остатка показывается в списке, но с in_stock=false."""
+    with patch("app.services.b2b_client.get_product", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = MOCK_PRODUCT_NO_STOCK
+        r = await client.get(f"/api/v1/catalog/products/{PRODUCT_ID}")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["has_stock"] is False
+        assert len(data["skus"]) == 1
+        sku = data["skus"][0]
+        assert sku["in_stock"] is False
+        assert sku["available_quantity"] == 0
+        # Скидка > 0 — признак скидки
+        assert sku["discount"] == 10
