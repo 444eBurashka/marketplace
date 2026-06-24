@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Header
+from fastapi.responses import JSONResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -27,14 +28,17 @@ async def checkout(
     body: CheckoutRequest,
     buyer: CurrentBuyer,
     db: DB,
-    idempotency_key: uuid.UUID = Header(..., alias="Idempotency-Key"),  # ← заголовок
+    idempotency_key: uuid.UUID = Header(..., alias="Idempotency-Key"),
 ) -> dict:
     # Идемпотентность по idempotency_key из заголовка
     existing = await db.scalar(
         select(Order).where(Order.idempotency_key == idempotency_key)
     )
     if existing:
-        return {"id": str(existing.id), "number": existing.number, "status": existing.status.value}
+        return JSONResponse(
+            status_code=200,
+            content={"id": str(existing.id), "number": existing.number, "status": existing.status.value},
+        )
 
     # Получаем адрес
     address = await db.get(Address, body.address_id)
@@ -50,15 +54,15 @@ async def checkout(
             raise HTTPException(status_code=400, detail={"code": "EMPTY_CART", "message": "Cart is empty"})
         result = await db.execute(select(CartItem).where(CartItem.cart_id == cart.id))
         db_items = result.scalars().all()
-        cart_items_raw = [CheckoutItemIn(sku_id=i.sku_id, quantity=i.quantity) for i in db_items]
+        cart_items_raw = [CheckoutItemIn(sku_id=i.sku_id, product_id=i.product_id, quantity=i.quantity) for i in db_items]
 
     items_to_reserve = []
     order_items_data = []
     subtotal = 0
 
     for item in cart_items_raw:
-        # Получаем данные о товаре из B2B
-        product = await b2b_client.get_product_by_sku(str(item.sku_id))  # или get_products с фильтром
+        # Получаем данные о товаре из B2B по product_id
+        product = await b2b_client.get_product(str(item.product_id))
         if not product:
             raise HTTPException(status_code=400, detail={"code": "PRODUCT_NOT_FOUND"})
 
@@ -73,7 +77,7 @@ async def checkout(
         items_to_reserve.append({"sku_id": str(item.sku_id), "quantity": item.quantity})
         order_items_data.append({
             "sku_id": item.sku_id,
-            "product_id": uuid.UUID(product["id"]),
+            "product_id": item.product_id,
             "name": product.get("title", ""),
             "sku_attributes": sku.get("attributes", []),
             "unit_price": price,
@@ -83,7 +87,7 @@ async def checkout(
 
     # Резервируем в B2B — all-or-nothing
     reserve_result = await b2b_client.reserve(
-        order_id=str(uuid.uuid4()),  # временный, заменим после создания Order
+        order_id=str(uuid.uuid4()),
         idempotency_key=idempotency_key,
         items=items_to_reserve,
     )
@@ -113,7 +117,7 @@ async def checkout(
     order = Order(
         number=order_number,
         buyer_id=buyer.id,
-        idempotency_key=body.idempotency_key,
+        idempotency_key=idempotency_key,
         status=OrderStatus.PAID,
         address_snapshot=address_snapshot,
         payment_method_id=body.payment_method_id,
@@ -121,12 +125,22 @@ async def checkout(
         delivery_cost=0,
         total=subtotal,
     )
+    db.add(order)
+    await db.flush()  # фиксируем order, чтобы получить order.id
+
     for oid in order_items_data:
         db.add(OrderItem(order_id=order.id, **oid))
     await db.flush()
 
     # Записываем историю статусов
     db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.PAID))
+    await db.flush()
+
+    # Читаем order items из БД для ответа
+    items_result = await db.execute(
+        select(OrderItem).where(OrderItem.order_id == order.id)
+    )
+    db_items = items_result.scalars().all()
 
     return {
         "id": str(order.id),
@@ -146,7 +160,7 @@ async def checkout(
                 "quantity": i.quantity,
                 "line_total": i.line_total,
             }
-            for i in order_items_data  # используем уже собранные данные
+            for i in db_items
         ],
         "created_at": order.created_at.isoformat(),
     }
@@ -158,18 +172,25 @@ async def list_orders(
     buyer: CurrentBuyer,
     db: DB,
     status: str | None = Query(default=None),
-    limit: int = Query(default=1, ge=1, le=100),
-    offset: int = Query(default=20, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
 ) -> dict:
+    from sqlalchemy import func as sa_func
+
     query = select(Order).where(Order.buyer_id == buyer.id)
     if status:
-        count_q = count_q.where(Order.status == OrderStatus(status))
         try:
-            query = query.where(Order.status == OrderStatus(status))
+            status_enum = OrderStatus(status)
         except ValueError:
             raise HTTPException(status_code=400, detail={"code": "INVALID_STATUS", "message": f"Unknown status: {status}"})
+        query = query.where(Order.status == status_enum)
+
+    count_q = select(sa_func.count()).select_from(Order).where(Order.buyer_id == buyer.id)
+    if status:
+        count_q = count_q.where(Order.status == status_enum)
     total_count = await db.scalar(count_q)
-    query = query.order_by(Order.created_at.desc()).offset((limit - 1) * offset).limit(offset)
+
+    query = query.order_by(Order.created_at.desc()).offset(offset).limit(limit)
     result = await db.execute(query)
     orders = result.scalars().all()
 
@@ -223,11 +244,9 @@ async def get_order(order_id: uuid.UUID, buyer: CurrentBuyer, db: DB) -> dict:
 
 # ─── US-ORD-03: Отмена заказа ────────────────────────────────────────────────
 
-CANCELLABLE_STATUSES = CANCELLABLE_STATUSES = {
+CANCELLABLE_STATUSES = {
     OrderStatus.CREATED,
     OrderStatus.PAID,
-    OrderStatus.ASSEMBLING,   # ← ДОБАВЛЕНО
-    OrderStatus.DELIVERING,   # ← ДОБАВЛЕНО
 }
 
 @router.post("/orders/{order_id}/cancel")
