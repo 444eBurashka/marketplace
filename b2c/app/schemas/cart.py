@@ -39,15 +39,20 @@ class CartItemOut(BaseModel):
     product_id: uuid.UUID
     quantity: int
     # из B2B:
-    title: str | None = None
-    price: int | None = None
+    name: str | None = None
+    unit_price: int = 0
+    line_total: int = 0
+    available_quantity: int = 0
+    is_available: bool = False
     available: bool = True
     unavailable_reason: str | None = None
 
 
 class CartOut(BaseModel):
     items: list[CartItemOut]
-    total_amount: int       # сумма только доступных позиций
+    items_count: int
+    subtotal: int
+    is_valid: bool       # сумма только доступных позиций
 
 
 class CartItemUpdate(BaseModel):

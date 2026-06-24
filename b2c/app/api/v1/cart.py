@@ -38,58 +38,13 @@ async def _get_or_create_cart(
     return cart
 
 
-@router.post("/cart/items", status_code=201)
-async def add_to_cart(
-    body: CartItemIn,
-    buyer: OptionalBuyer,
-    db: DB,
-    x_session_id: str | None = Header(default=None),
-) -> dict:
-    cart = await _get_or_create_cart(db, buyer, x_session_id)
-
-    # Если SKU уже в корзине — увеличиваем quantity
-    existing = await db.scalar(
-        select(CartItem).where(
-            CartItem.cart_id == cart.id,
-            CartItem.sku_id == body.sku_id,
-        )
-    )
-    if existing:
-        existing.quantity += body.quantity
-        return {"id": str(existing.id), "quantity": existing.quantity}
-
-    item = CartItem(
-        cart_id=cart.id,
-        sku_id=body.sku_id,
-        product_id=body.product_id,
-        quantity=body.quantity,
-    )
-    db.add(item)
-    await db.flush()
-    return {"id": str(item.id), "sku_id": str(body.sku_id), "quantity": item.quantity}
-
-
-@router.get("/cart", response_model=CartOut)
-async def get_cart(
-    buyer: OptionalBuyer,
-    db: DB,
-    x_session_id: str | None = Header(default=None),
-) -> CartOut:
-    if buyer:
-        cart = await db.scalar(select(Cart).where(Cart.buyer_id == buyer.id))
-    elif x_session_id:
-        cart = await db.scalar(select(Cart).where(Cart.session_id == x_session_id))
-    else:
-        return CartOut(items=[], total_amount=0)
-
-    if not cart:
-        return CartOut(items=[], total_amount=0)
-
+async def _enrich_cart(cart: Cart, db: AsyncSession) -> CartOut:
+    """Build a CartOut with B2B-enriched items."""
     result = await db.execute(select(CartItem).where(CartItem.cart_id == cart.id))
     items_db = result.scalars().all()
 
     enriched: list[CartItemOut] = []
-    total_amount = 0
+    subtotal = 0
 
     for item in items_db:
         product = await b2b_client.get_product(str(item.product_id))
@@ -119,7 +74,7 @@ async def get_cart(
 
         price = sku.get("price", 0)
         qty_available = sku.get("quantity", 0) - sku.get("reserved_quantity", 0)
-        title = product.get("title") or product.get("name", "")
+        name = product.get("title") or product.get("name", "")
 
         if qty_available <= 0:
             enriched.append(CartItemOut(
@@ -127,39 +82,100 @@ async def get_cart(
                 sku_id=item.sku_id,
                 product_id=item.product_id,
                 quantity=item.quantity,
+                name=name,
+                unit_price=price,
+                line_total=0,
+                available_quantity=0,
+                is_available=False,
                 available=False,
                 unavailable_reason="OUT_OF_STOCK",
-                title=title,
-                price=price,
             ))
         else:
-            total_amount += price * item.quantity
+            line_total = price * item.quantity
+            subtotal += line_total
             enriched.append(CartItemOut(
                 id=item.id,
                 sku_id=item.sku_id,
                 product_id=item.product_id,
                 quantity=item.quantity,
+                name=name,
+                unit_price=price,
+                line_total=line_total,
+                available_quantity=qty_available,
+                is_available=True,
                 available=True,
-                title=title,
-                price=price,
             ))
 
-    return CartOut(items=enriched, total_amount=total_amount)
+    return CartOut(
+        items=enriched,
+        items_count=len(enriched),
+        subtotal=subtotal,
+        is_valid=all(i.available for i in enriched),
+    )
 
-@router.delete("/cart/items/{sku_id}", status_code=204)
-async def remove_cart_item(
-    sku_id: uuid.UUID,
+
+@router.post("/cart/items", status_code=200, response_model=CartOut)
+async def add_to_cart(
+    body: CartItemIn,
     buyer: OptionalBuyer,
     db: DB,
     x_session_id: str | None = Header(default=None),
-) -> None:
-    # Сначала найдём корзину, потом удалим по sku_id
+) -> CartOut:
+    cart = await _get_or_create_cart(db, buyer, x_session_id)
+
+    existing = await db.scalar(
+        select(CartItem).where(
+            CartItem.cart_id == cart.id,
+            CartItem.sku_id == body.sku_id,
+        )
+    )
+    if existing:
+        existing.quantity += body.quantity
+    else:
+        item = CartItem(
+            cart_id=cart.id,
+            sku_id=body.sku_id,
+            product_id=body.product_id,
+            quantity=body.quantity,
+        )
+        db.add(item)
+
+    await db.flush()
+    return await _enrich_cart(cart, db)
+
+
+@router.get("/cart", response_model=CartOut)
+async def get_cart(
+    buyer: OptionalBuyer,
+    db: DB,
+    x_session_id: str | None = Header(default=None),
+) -> CartOut:
     if buyer:
         cart = await db.scalar(select(Cart).where(Cart.buyer_id == buyer.id))
     elif x_session_id:
         cart = await db.scalar(select(Cart).where(Cart.session_id == x_session_id))
     else:
-        return
+        return CartOut(items=[], items_count=0, subtotal=0, is_valid=True)
+
+    if not cart:
+        return CartOut(items=[], items_count=0, subtotal=0, is_valid=True)
+
+    return await _enrich_cart(cart, db)
+
+
+@router.delete("/cart/items/{sku_id}", status_code=200, response_model=CartOut)
+async def remove_cart_item(
+    sku_id: uuid.UUID,
+    buyer: OptionalBuyer,
+    db: DB,
+    x_session_id: str | None = Header(default=None),
+) -> CartOut:
+    cart: Cart | None = None
+    if buyer:
+        cart = await db.scalar(select(Cart).where(Cart.buyer_id == buyer.id))
+    elif x_session_id:
+        cart = await db.scalar(select(Cart).where(Cart.session_id == x_session_id))
+
     if cart:
         await db.execute(
             delete(CartItem).where(
@@ -167,6 +183,11 @@ async def remove_cart_item(
                 CartItem.sku_id == sku_id,
             )
         )
+        await db.flush()
+        return await _enrich_cart(cart, db)
+
+    return CartOut(items=[], items_count=0, subtotal=0, is_valid=True)
+
 
 @router.delete("/cart", status_code=204)
 async def clear_cart(
@@ -201,7 +222,6 @@ async def merge_cart(
 
     auth_cart = await db.scalar(select(Cart).where(Cart.buyer_id == buyer.id))
     if not auth_cart:
-        # Просто привязываем гостевую корзину к покупателю
         guest_cart.buyer_id = buyer.id
         guest_cart.session_id = None
         return {"merged": 0}
@@ -228,7 +248,6 @@ async def merge_cart(
             )
             db.add(new_item)
 
-    # Удаляем гостевую корзину
     await db.execute(delete(CartItem).where(CartItem.cart_id == guest_cart.id))
     await db.delete(guest_cart)
 
