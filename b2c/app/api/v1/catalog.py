@@ -101,15 +101,44 @@ async def get_product(product_id: uuid.UUID) -> dict:
     if data.get("status") != "MODERATED" or data.get("deleted"):
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Product not found"})
 
-    # Убираем поля, запрещённые для покупателя
-    for sku in data.get("skus", []):
-        sku.pop("cost_price", None)
-        sku.pop("reserved_quantity", None)
-        # Добавляем in_stock
-        qty = sku.get("quantity", 0)
-        sku["in_stock"] = qty > 0
+    skus = data.get("skus", [])
 
-    return data
+    # Вычисляем агрегированные поля для карточки товара
+    prices = [s.get("price", 0) for s in skus if s.get("price") is not None and s.get("quantity", 0) > 0]
+    min_price = min(prices) if prices else 0
+    has_stock = any(s.get("quantity", 0) > 0 for s in skus)
+
+    # Маппинг B2B → B2C для SKU: только безопасные поля
+    b2c_skus = []
+    for sku in skus:
+        qty = sku.get("quantity", 0)
+        b2c_sku = {
+            "id": sku.get("id"),
+            "code": sku.get("code", ""),
+            "price": sku.get("price", 0),
+            "discount": sku.get("discount", 0),
+            "available_quantity": qty,
+            "in_stock": qty > 0,
+            # is_active необходим для фильтрации на фронте
+            "is_active": sku.get("is_active", True),
+        }
+        # attributes — опциональные характеристики варианта (цвет, размер)
+        if "attributes" in sku:
+            b2c_sku["attributes"] = sku["attributes"]
+        b2c_skus.append(b2c_sku)
+        # cost_price и reserved_quantity НЕ включаем — утечка данных продавца
+
+    return {
+        "id": data.get("id"),
+        "name": data.get("title", ""),
+        "slug": data.get("slug"),
+        "description": data.get("description", ""),
+        "category_id": data.get("category_id"),
+        "images": data.get("images", []),
+        "min_price": min_price,
+        "has_stock": has_stock,
+        "skus": b2c_skus,
+    }
 
 
 # ─── US-CAT-04: Похожие товары ───────────────────────────────────────────────
