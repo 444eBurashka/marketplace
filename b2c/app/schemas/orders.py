@@ -4,13 +4,14 @@ from pydantic import BaseModel
 
 class CheckoutItemIn(BaseModel):
     sku_id: uuid.UUID
+    product_id: uuid.UUID
     quantity: int
 
 
 class CheckoutRequest(BaseModel):
-    items: list[CheckoutItemIn] = []   # ← необязателен (спецификация не требует)
+    items: list[CheckoutItemIn] = []
     address_id: uuid.UUID
-    payment_method_id: uuid.UUID | None = None
+    payment_method_id: uuid.UUID
 
 
 class OrderItemOut(BaseModel):
