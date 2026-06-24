@@ -110,7 +110,7 @@ async def test_hard_block_transitions_to_terminal_and_emits_event(
     db_session.add(ticket)
     await db_session.flush()
 
-    r1 = await client.post("/api/v1/tickets/next", headers=auth_headers)
+    r1 = await client.post("/api/v1/queue/claim", headers=auth_headers)
     assert r1.status_code == 200, r1.text
     ticket_id = r1.json()["id"]
 
@@ -162,7 +162,7 @@ async def test_hard_block_event_carries_hard_block_true(
     db_session.add(ticket)
     await db_session.flush()
 
-    r1 = await client.post("/api/v1/tickets/next", headers=auth_headers)
+    r1 = await client.post("/api/v1/queue/claim", headers=auth_headers)
     assert r1.status_code == 200
     ticket_id = r1.json()["id"]
 
@@ -212,7 +212,7 @@ async def test_any_modify_on_hard_blocked_returns_403(
     db_session.add(ticket)
     await db_session.flush()
 
-    r1 = await client.post("/api/v1/tickets/next", headers=auth_headers)
+    r1 = await client.post("/api/v1/queue/claim", headers=auth_headers)
     assert r1.status_code == 200
     ticket_id = r1.json()["id"]
 
@@ -278,7 +278,7 @@ async def test_edited_event_on_hard_blocked_is_ignored(
     category_id = ticket.category_id
 
     # Claim and hard block
-    r1 = await client.post("/api/v1/tickets/next", headers=auth_headers)
+    r1 = await client.post("/api/v1/queue/claim", headers=auth_headers)
     assert r1.status_code == 200
     ticket_id = r1.json()["id"]
 
@@ -342,7 +342,7 @@ async def test_deleted_event_removes_hard_blocked(
     product_id = ticket.product_id
 
     # Claim and hard block
-    r1 = await client.post("/api/v1/tickets/next", headers=auth_headers)
+    r1 = await client.post("/api/v1/queue/claim", headers=auth_headers)
     assert r1.status_code == 200
     ticket_id = r1.json()["id"]
 
@@ -390,7 +390,7 @@ async def test_decline_mixed_soft_hard_reasons_returns_400(
     db_session.add(ticket)
     await db_session.flush()
 
-    r1 = await client.post("/api/v1/tickets/next", headers=auth_headers)
+    r1 = await client.post("/api/v1/queue/claim", headers=auth_headers)
     assert r1.status_code == 200
     ticket_id = r1.json()["id"]
 
