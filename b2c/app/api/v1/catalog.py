@@ -21,9 +21,9 @@ async def list_products(
     min_price: int | None = Query(default=None),
     max_price: int | None = Query(default=None),
     in_stock: bool | None = Query(default=None),
-    sort: str = Query(default="created_at_desc"),
-    limit: int = Query(default=1, ge=1),
-    offset: int = Query(default=20, ge=1, le=100),
+    sort: str = Query(default="popularity"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     # US-CAT-02: поиск
     q: str | None = Query(default=None, min_length=None),
 ) -> dict:
@@ -64,12 +64,19 @@ async def list_products(
     if q:
         params["q"] = q
 
-    return await b2b_client.get_products(params)
+    data = await b2b_client.get_products(params)
+    # PaginatedCatalogProducts: total_count/limit/offset вместо total/page/page_size
+    return {
+        "items": data.get("items", []),
+        "total_count": data.get("total", 0),
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 # ─── US-CAT-01: Фасеты ───────────────────────────────────────────────────────
 
-@router.get("/catalog/facets")
+@router.get("/facets")
 async def get_facets(
     category_id: uuid.UUID | None = Query(default=None),
     q: str | None = Query(default=None),

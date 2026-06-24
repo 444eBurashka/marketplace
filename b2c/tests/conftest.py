@@ -1,8 +1,8 @@
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
-from sqlalchemy import JSON
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import JSON, Uuid
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.main import app
@@ -19,6 +19,9 @@ async def test_engine():
         for column in table.columns:
             if isinstance(column.type, JSONB):
                 column.type = JSON()
+            elif isinstance(column.type, PG_UUID):
+                # PG_UUID → Uuid for SQLite compatibility (Python 3.14 bug)
+                column.type = Uuid()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield engine
