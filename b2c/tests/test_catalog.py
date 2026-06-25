@@ -19,7 +19,8 @@ MOCK_PRODUCTS = {
 async def test_catalog_returns_filtered_sorted_products(client: AsyncClient):
     with patch("app.services.b2b_client.get_products", new_callable=AsyncMock) as mock_get:
         mock_get.return_value = MOCK_PRODUCTS
-        r = await client.get(f"/api/v1/catalog/products?category_id={CATEGORY_ID}&sort=price_asc")
+        # Фильтры в deepObject-стиле: filter[category_id] согласно контракту (openapi.yaml:316-321)
+        r = await client.get(f"/api/v1/catalog/products?filter[category_id]={CATEGORY_ID}&sort=price_asc")
         assert r.status_code == 200
         data = r.json()
         assert "items" in data
@@ -27,6 +28,14 @@ async def test_catalog_returns_filtered_sorted_products(client: AsyncClient):
         call_params = mock_get.call_args[0][0]
         assert call_params["sort"] == "price_asc"
         assert call_params["status"] == "MODERATED"
+        # Проверяем обязательные поля карточки в каждом элементе (openapi.yaml:1040)
+        assert len(data["items"]) > 0
+        item = data["items"][0]
+        assert "name" in item, "обязательное поле name отсутствует (маппинг title→name не применён)"
+        assert item["name"] == "Test Product"
+        assert "min_price" in item
+        assert "has_stock" in item
+        assert "images" in item
 
 
 @pytest.mark.asyncio
