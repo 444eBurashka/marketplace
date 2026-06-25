@@ -214,7 +214,9 @@ async def get_similar_products(product_id: uuid.UUID) -> dict:
                 if len(items) >= 8:
                     break
 
-    return items[:8]
+    # Прогоняем через тот же маппер, что и основной листинг:
+    # title → name, has_stock, images — обязательные поля CatalogProductCard.
+    return [_map_listing_item(item) for item in items[:8]]
 
 
 # ─── US-CAT-05: Навигация по категориям ──────────────────────────────────────
@@ -235,7 +237,7 @@ async def get_category_tree() -> list:
             by_id[pid]["children"].append(by_id[cat["id"]])
         elif not pid:
             roots.append(by_id[cat["id"]])
-    return roots 
+    return roots
 
 
 @router.get("/categories/breadcrumbs")
