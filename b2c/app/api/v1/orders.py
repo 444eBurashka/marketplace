@@ -20,6 +20,68 @@ router = APIRouter()
 DB = Annotated[AsyncSession, Depends(get_db)]
 
 
+def _address_to_response(address: Address) -> dict:
+    """Маппинг модели Address → AddressResponse по контракту B2C.
+
+    Обязательные поля: country, city, street, building, id, created_at.
+    Поле почтового индекса в контракте — postal_code (в модели — zip_code).
+    country отсутствует в модели Address — подставляем пустую строку,
+    пока поле не добавлено в схему БД.
+    """
+    return {
+        "id": str(address.id),
+        "created_at": address.created_at.isoformat(),
+        "country": getattr(address, "country", ""),   # обязательное; добавить в модель
+        "city": address.city,
+        "street": address.street,
+        "building": address.building,
+        "apartment": address.apartment,
+        "postal_code": address.zip_code,              # zip_code → postal_code по контракту
+        "is_default": getattr(address, "is_default", False),
+        **({"region": address.region} if getattr(address, "region", None) else {}),
+        **({"recipient_name": address.recipient_name} if getattr(address, "recipient_name", None) else {}),
+        **({"recipient_phone": address.recipient_phone} if getattr(address, "recipient_phone", None) else {}),
+        **({"comment": address.comment} if getattr(address, "comment", None) else {}),
+    }
+
+
+def _build_order_response(order: Order, items_data: list[dict], address_response: dict) -> dict:
+    """Собирает полный OrderResponse по контракту B2C.
+
+    Обязательные поля: id, buyer_id, status, items, subtotal, total, address, created_at.
+    """
+    return {
+        "id": str(order.id),
+        "number": order.number,
+        "buyer_id": str(order.buyer_id),
+        "status": order.status.value,
+        "items": items_data,
+        "subtotal": order.subtotal,
+        "delivery_cost": order.delivery_cost,
+        "total": order.total,
+        "address": address_response,
+        "created_at": order.created_at.isoformat(),
+        # опциональные поля
+        **({"cancel_reason": order.cancel_reason} if order.cancel_reason else {}),
+    }
+
+
+def _order_items_to_response(items: list) -> list[dict]:
+    """Маппинг OrderItem → OrderItem в ответе по контракту."""
+    result = []
+    for i in items:
+        item: dict = {
+            "sku_id": str(i["sku_id"]) if isinstance(i, dict) else str(i.sku_id),
+            "product_id": str(i["product_id"]) if isinstance(i, dict) else str(i.product_id),
+            "name": i["name"] if isinstance(i, dict) else i.name,
+            "quantity": i["quantity"] if isinstance(i, dict) else i.quantity,
+            "unit_price": i["unit_price"] if isinstance(i, dict) else i.unit_price,
+            "line_total": i["line_total"] if isinstance(i, dict) else i.line_total,
+        }
+        result.append(item)
+    return result
+
+
 # ─── US-ORD-01: Checkout ─────────────────────────────────────────────────────
 
 @router.post("/orders", status_code=201)
@@ -27,14 +89,20 @@ async def checkout(
     body: CheckoutRequest,
     buyer: CurrentBuyer,
     db: DB,
-    idempotency_key: uuid.UUID = Header(..., alias="Idempotency-Key"),  # ← заголовок
+    idempotency_key: uuid.UUID = Header(..., alias="Idempotency-Key"),
 ) -> dict:
-    # Идемпотентность по idempotency_key из заголовка
+    # Идемпотентность: при повторе возвращаем полный OrderResponse со статусом 201
     existing = await db.scalar(
         select(Order).where(Order.idempotency_key == idempotency_key)
+        .options(selectinload(Order.items))
     )
     if existing:
-        return {"id": str(existing.id), "number": existing.number, "status": existing.status.value}
+        # Восстанавливаем адрес — он хранится в address_snapshot (уже в нужной форме)
+        return _build_order_response(
+            order=existing,
+            items_data=_order_items_to_response(existing.items),
+            address_response=existing.address_snapshot,  # снимок уже сохранён в формате AddressResponse
+        )
 
     # Получаем адрес
     address = await db.get(Address, body.address_id)
@@ -44,7 +112,6 @@ async def checkout(
     if body.items:
         cart_items_raw = body.items
     else:
-        # Получаем из корзины покупателя
         cart = await db.scalar(select(Cart).where(Cart.buyer_id == buyer.id))
         if not cart:
             raise HTTPException(status_code=400, detail={"code": "EMPTY_CART", "message": "Cart is empty"})
@@ -57,8 +124,7 @@ async def checkout(
     subtotal = 0
 
     for item in cart_items_raw:
-        # Получаем данные о товаре из B2B
-        product = await b2b_client.get_product_by_sku(str(item.sku_id))  # или get_products с фильтром
+        product = await b2b_client.get_product_by_sku(str(item.sku_id))
         if not product:
             raise HTTPException(status_code=400, detail={"code": "PRODUCT_NOT_FOUND"})
 
@@ -83,8 +149,8 @@ async def checkout(
 
     # Резервируем в B2B — all-or-nothing
     reserve_result = await b2b_client.reserve(
-        order_id=str(uuid.uuid4()),  # временный, заменим после создания Order
-        idempotency_key=idempotency_key,
+        order_id=str(uuid.uuid4()),
+        idempotency_key=str(idempotency_key),  # передаём str, не UUID
         items=items_to_reserve,
     )
 
@@ -100,56 +166,38 @@ async def checkout(
     if reserve_result["status_code"] >= 500:
         raise HTTPException(status_code=503, detail={"code": "B2B_UNAVAILABLE", "message": "B2B service unavailable"})
 
-    # Создаём заказ
+    # Формируем снимок адреса в формате AddressResponse — сохраняем именно его,
+    # чтобы при идемпотентном повторе вернуть корректную форму без обращения к БД.
+    address_response = _address_to_response(address)
+
     order_number = f"ORD-{datetime.now(UTC).strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
-    address_snapshot = {
-        "city": address.city,
-        "street": address.street,
-        "building": address.building,
-        "apartment": address.apartment,
-        "zip_code": address.zip_code,
-    }
 
     order = Order(
         number=order_number,
         buyer_id=buyer.id,
-        idempotency_key=body.idempotency_key,
+        idempotency_key=idempotency_key,
         status=OrderStatus.PAID,
-        address_snapshot=address_snapshot,
+        address_snapshot=address_response,  # сохраняем уже в форме AddressResponse
         payment_method_id=body.payment_method_id,
         subtotal=subtotal,
         delivery_cost=0,
         total=subtotal,
     )
+    db.add(order)
+    await db.flush()
+
     for oid in order_items_data:
         db.add(OrderItem(order_id=order.id, **oid))
     await db.flush()
 
-    # Записываем историю статусов
     db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.PAID))
 
-    return {
-        "id": str(order.id),
-        "number": order.number,
-        "status": order.status.value,
-        "buyer_id": str(order.buyer_id),
-        "subtotal": order.subtotal,
-        "delivery_cost": order.delivery_cost,
-        "total": order.total,
-        "address": order.address_snapshot,
-        "items": [
-            {
-                "sku_id": str(i.sku_id),
-                "product_id": str(i.product_id),
-                "name": i.name,
-                "unit_price": i.unit_price,
-                "quantity": i.quantity,
-                "line_total": i.line_total,
-            }
-            for i in order_items_data  # используем уже собранные данные
-        ],
-        "created_at": order.created_at.isoformat(),
-    }
+    return _build_order_response(
+        order=order,
+        items_data=_order_items_to_response(order_items_data),
+        address_response=address_response,
+    )
+
 
 # ─── US-ORD-02: Просмотр заказов ─────────────────────────────────────────────
 
@@ -189,39 +237,21 @@ async def list_orders(
 
 @router.get("/orders/{order_id}")
 async def get_order(order_id: uuid.UUID, buyer: CurrentBuyer, db: DB) -> dict:
-    # IDOR защита: всегда 404, никогда 403
     result = await db.execute(
         select(Order).where(
             Order.id == order_id,
-            Order.buyer_id == buyer.id,  # фильтруем сразу по buyer_id
+            Order.buyer_id == buyer.id,
         ).options(selectinload(Order.items), selectinload(Order.status_history))
     )
     order = result.scalar_one_or_none()
     if not order:
         raise NotFoundError(detail="Order not found")
 
-    return {
-        "id": str(order.id),
-        "number": order.number,
-        "status": order.status.value,
-        "buyer_id": str(order.buyer_id),          # ← ДОБАВЛЕНО
-        "subtotal": order.subtotal,
-        "delivery_cost": order.delivery_cost,
-        "total": order.total,
-        "address": order.address_snapshot,        # ← ДОБАВЛЕНО
-        "items": [
-            {
-                "sku_id": str(i.sku_id),
-                "product_id": str(i.product_id),  # ← ДОБАВЛЕНО
-                "name": i.name,
-                "unit_price": i.unit_price,
-                "quantity": i.quantity,
-                "line_total": i.line_total,
-            }
-            for i in order.items
-        ],
-        "created_at": order.created_at.isoformat(),
-    }
+    return _build_order_response(
+        order=order,
+        items_data=_order_items_to_response(order.items),
+        address_response=order.address_snapshot,  # уже в форме AddressResponse
+    )
 
 
 # ─── US-ORD-03: Отмена заказа ────────────────────────────────────────────────
@@ -255,21 +285,19 @@ async def cancel_order(
             },
         )
 
-    # Пытаемся снять резерв в B2B
     result_items = await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
     items_for_unreserve = [
         {"sku_id": str(i.sku_id), "quantity": i.quantity}
         for i in result_items.scalars().all()
     ]
     unreserve_status = await b2b_client.unreserve(str(order.id), items_for_unreserve)
-    
+
     if unreserve_status in (200, 204):
         order.status = OrderStatus.CANCELLED
         order.cancelled_at = datetime.now(UTC)
         order.cancel_reason = body.reason
         db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.CANCELLED, comment=body.reason))
     else:
-        # B2B недоступен — ставим CANCEL_PENDING, ретраим позже
         order.status = OrderStatus.CANCEL_PENDING
         db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.CANCEL_PENDING))
 
@@ -292,7 +320,6 @@ async def handle_product_event(body: dict, db: DB) -> dict:
     event_type = body.get("event_type")
     sku_ids = body.get("sku_ids", [])
 
-    # Идемпотентность
     if idempotency_key:
         existing = await db.scalar(
             select(B2BEventInbox).where(
@@ -310,7 +337,6 @@ async def handle_product_event(body: dict, db: DB) -> dict:
         )
         db.add(inbox)
 
-    # Обновляем unavailable_reason в cart_items для всех затронутых sku_ids
     if sku_ids and event_type in ("PRODUCT_BLOCKED", "PRODUCT_DELETED", "OUT_OF_STOCK"):
         sku_uuids = [uuid.UUID(s) for s in sku_ids]
         await db.execute(
@@ -319,8 +345,6 @@ async def handle_product_event(body: dict, db: DB) -> dict:
             .values(unavailable_reason=event_type)
         )
 
-    # ЗАКАЗЫ НЕ ТРОГАЕМ — цены зафиксированы
-
     return {"status": "processed"}
 
 
@@ -328,9 +352,9 @@ async def handle_product_event(body: dict, db: DB) -> dict:
 
 @router.post("/orders/{order_id}/deliver")
 async def mark_delivered(order_id: uuid.UUID, buyer: CurrentBuyer, db: DB) -> dict:
-    """Пример: переводим заказ в DELIVERED и вызываем fulfill в B2B."""
     result = await db.execute(
         select(Order).where(Order.id == order_id, Order.buyer_id == buyer.id)
+        .options(selectinload(Order.items))
     )
     order = result.scalar_one_or_none()
     if not order:
@@ -343,10 +367,13 @@ async def mark_delivered(order_id: uuid.UUID, buyer: CurrentBuyer, db: DB) -> di
     db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.DELIVERED))
     await db.flush()
 
-    # Fulfill — fire-and-forget (scaffold)
-    fulfill_status = await b2b_client.fulfill(str(order.id))
+    # Передаём items в fulfill — исправлен баг с одним аргументом
+    items_for_fulfill = [
+        {"sku_id": str(i.sku_id), "quantity": i.quantity}
+        for i in order.items
+    ]
+    fulfill_status = await b2b_client.fulfill(str(order.id), items_for_fulfill)
     if fulfill_status not in (200, 204):
-        # Логируем ошибку, не откатываем — товар уже у покупателя
         import logging
         logging.error(f"Fulfill failed for order {order.id}, status {fulfill_status}. Will retry later.")
 
