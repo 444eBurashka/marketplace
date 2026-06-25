@@ -3,23 +3,33 @@ from typing import Any
 from pydantic import BaseModel
 
 
-class SKUOut(BaseModel):
+class CatalogSku(BaseModel):
+    """Схема SKU для карточки товара (b2c/openapi.yaml: CatalogSku).
+
+    Обязательные поля: id, price, available_quantity.
+    Опциональные: sku_code, name, old_price, attributes, images.
+    Поля in_stock и discount контрактом не предусмотрены — не включаем.
+    """
     id: uuid.UUID
-    code: str
-    price: int          # копейки
-    discount: int       # копейки, 0 если нет скидки
-    in_stock: bool
-    attributes: list[dict[str, str]]
+    price: int                              # копейки
+    available_quantity: int                 # из B2B active_quantity
+    sku_code: str | None = None             # из B2B article
+    name: str | None = None
+    old_price: int | None = None
+    attributes: list[dict[str, Any]] = []
+    images: list[str] = []
 
 
 class ProductOut(BaseModel):
     id: uuid.UUID
-    title: str
+    name: str                               # B2B title → B2C name
     description: str
     category_id: uuid.UUID | None
-    slug: str
+    slug: str | None = None
     images: list[str]
-    skus: list[SKUOut]
+    min_price: int
+    has_stock: bool
+    skus: list[CatalogSku]
 
 
 class ProductListOut(BaseModel):
