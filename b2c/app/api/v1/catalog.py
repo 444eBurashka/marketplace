@@ -1,10 +1,8 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, HTTPException, Query
 
-from app.db.session import get_db
 from app.services import b2b_client
 
 router = APIRouter()
@@ -15,12 +13,40 @@ router = APIRouter()
 ALLOWED_SORT = {"price_asc", "price_desc", "new", "popularity"}
 
 
+def _map_listing_item(item: dict) -> dict:
+    """Маппинг B2B-элемента каталога → B2C CatalogProduct.
+    Обязательные поля: id, name, min_price, has_stock, images (openapi.yaml:1040).
+    B2B отдаёт title — маппим в name.
+    """
+    skus = item.get("skus", [])
+    # Вычисляем min_price и has_stock из SKU, если они есть; иначе берём готовые поля B2B
+    if skus:
+        prices = [s.get("price", 0) for s in skus if s.get("price") is not None and s.get("quantity", 0) > 0]
+        min_price = min(prices) if prices else item.get("min_price", 0)
+        has_stock = any(s.get("quantity", 0) > 0 for s in skus)
+    else:
+        min_price = item.get("min_price", 0)
+        has_stock = item.get("has_stock", False)
+
+    return {
+        "id": item.get("id"),
+        "name": item.get("title") or item.get("name", ""),
+        "min_price": min_price,
+        "has_stock": has_stock,
+        "images": item.get("images", []),
+        # опциональные поля
+        **({"slug": item["slug"]} if "slug" in item else {}),
+        **({"category_id": item["category_id"]} if "category_id" in item else {}),
+    }
+
+
 @router.get("/products")
 async def list_products(
-    category_id: uuid.UUID | None = Query(default=None),
-    min_price: int | None = Query(default=None),
-    max_price: int | None = Query(default=None),
-    in_stock: bool | None = Query(default=None),
+    # US-CAT-01: фильтры в deepObject-стиле: filter[price_min], filter[price_max],
+    # filter[category_id] — согласно CatalogFilter (openapi.yaml:1018, 300-321)
+    filter_category_id: uuid.UUID | None = Query(default=None, alias="filter[category_id]"),
+    filter_price_min: int | None = Query(default=None, alias="filter[price_min]"),
+    filter_price_max: int | None = Query(default=None, alias="filter[price_max]"),
     sort: str = Query(default="popularity"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -53,21 +79,21 @@ async def list_products(
         "deleted": False,
         "active_quantity_gt": 0,
     }
-    if category_id:
-        params["category_id"] = str(category_id)
-    if min_price is not None:
-        params["min_price"] = min_price
-    if max_price is not None:
-        params["max_price"] = max_price
-    if in_stock is not None:
-        params["in_stock"] = in_stock
+    if filter_category_id:
+        params["category_id"] = str(filter_category_id)
+    if filter_price_min is not None:
+        params["min_price"] = filter_price_min
+    if filter_price_max is not None:
+        params["max_price"] = filter_price_max
     if q:
         params["q"] = q
 
     data = await b2b_client.get_products(params)
+    # Маппируем каждый элемент: title→name + обязательные поля карточки (openapi.yaml:1040)
+    items = [_map_listing_item(item) for item in data.get("items", [])]
     # PaginatedCatalogProducts: total_count/limit/offset вместо total/page/page_size
     return {
-        "items": data.get("items", []),
+        "items": items,
         "total_count": data.get("total", 0),
         "limit": limit,
         "offset": offset,
