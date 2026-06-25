@@ -111,7 +111,7 @@ async def test_get_cart_enriched_with_b2b_data(client: AsyncClient, db_session: 
     assert item["available_quantity"] == 10
     assert item["is_available"] is True
     assert item["available"] is True
-    assert data["items_count"] == 1
+    assert data["items_count"] == 2
     assert data["subtotal"] == 3000
     assert data["is_valid"] is True
 
@@ -234,3 +234,135 @@ async def test_delete_cart_item_returns_cart(client: AsyncClient, db_session: As
     assert data["subtotal"] == 0
     assert data["items_count"] == 0
     assert data["is_valid"] is True
+
+
+# ─────────────────────────────
+# 409 INSUFFICIENT_STOCK
+# ─────────────────────────────
+
+@pytest.mark.asyncio
+async def test_add_to_cart_returns_409_when_insufficient_stock(client: AsyncClient, db_session: AsyncSession):
+    """POST /cart/items возвращает 409, если запрошенное количество превышает active_quantity."""
+    buyer, token = await create_buyer(db_session, "stock409@test.com")
+
+    with _mock_b2b(active_quantity=2):
+        r = await client.post(
+            "/api/v1/cart/items",
+            json={"sku_id": SKU, "quantity": 5},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "INSUFFICIENT_STOCK"
+
+
+@pytest.mark.asyncio
+async def test_patch_cart_item_returns_409_when_insufficient_stock(client: AsyncClient, db_session: AsyncSession):
+    """PATCH /cart/items/{sku_id} возвращает 409, если новое количество превышает active_quantity."""
+    buyer, token = await create_buyer(db_session, "patch409@test.com")
+
+    with _mock_b2b(active_quantity=10):
+        await client.post(
+            "/api/v1/cart/items",
+            json={"sku_id": SKU, "quantity": 1},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    with _mock_b2b(active_quantity=3):
+        r = await client.patch(
+            f"/api/v1/cart/items/{SKU}",
+            json={"quantity": 10},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "INSUFFICIENT_STOCK"
+
+
+# ─────────────────────────────
+# POST /cart/validate
+# ─────────────────────────────
+
+@pytest.mark.asyncio
+async def test_validate_cart_returns_valid_when_all_available(client: AsyncClient, db_session: AsyncSession):
+    """POST /cart/validate возвращает is_valid=True и пустой issues для доступной корзины."""
+    buyer, token = await create_buyer(db_session, "valid_cart@test.com")
+
+    with _mock_b2b(price=1000, active_quantity=10):
+        await client.post(
+            "/api/v1/cart/items",
+            json={"sku_id": SKU, "quantity": 2},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    with _mock_b2b(price=1000, active_quantity=10):
+        r = await client.post(
+            "/api/v1/cart/validate",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["is_valid"] is True
+    assert data["issues"] == []
+    assert "cart" in data
+    assert data["cart"]["subtotal"] == 2000
+
+
+@pytest.mark.asyncio
+async def test_validate_cart_returns_issue_for_blocked_product(client: AsyncClient, db_session: AsyncSession):
+    """POST /cart/validate возвращает PRODUCT_BLOCKED при недоступном товаре."""
+    from unittest.mock import AsyncMock, patch
+
+    buyer, token = await create_buyer(db_session, "blocked_cart@test.com")
+
+    with _mock_b2b():
+        await client.post(
+            "/api/v1/cart/items",
+            json={"sku_id": SKU, "quantity": 1},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    with patch.multiple(
+        "app.services.b2b_client",
+        get_product=AsyncMock(return_value=None),
+    ):
+        r = await client.post(
+            "/api/v1/cart/validate",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["is_valid"] is False
+    assert len(data["issues"]) == 1
+    assert data["issues"][0]["type"] == "PRODUCT_DELETED"
+    assert data["issues"][0]["sku_id"] == SKU
+
+
+@pytest.mark.asyncio
+async def test_validate_cart_returns_quantity_reduced_issue(client: AsyncClient, db_session: AsyncSession):
+    """POST /cart/validate возвращает QUANTITY_REDUCED, если остаток меньше quantity в корзине."""
+    buyer, token = await create_buyer(db_session, "qty_reduced@test.com")
+
+    with _mock_b2b(active_quantity=10):
+        await client.post(
+            "/api/v1/cart/items",
+            json={"sku_id": SKU, "quantity": 5},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    # Остаток упал до 2 — меньше чем 5 в корзине
+    with _mock_b2b(active_quantity=2):
+        r = await client.post(
+            "/api/v1/cart/validate",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["is_valid"] is False
+    issue = data["issues"][0]
+    assert issue["type"] == "QUANTITY_REDUCED"
+    assert issue["old_value"] == 5
+    assert issue["new_value"] == 2

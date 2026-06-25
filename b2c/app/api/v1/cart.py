@@ -8,7 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import CurrentBuyer, OptionalBuyer
 from app.db.session import get_db
 from app.models import Buyer, Cart, CartItem
-from app.schemas.cart import CartItemIn, CartItemOut, CartOut, CartItemUpdate
+from app.schemas.cart import (
+    CartItemIn,
+    CartItemOut,
+    CartItemUpdate,
+    CartOut,
+    CartValidationIssue,
+    CartValidationResponse,
+)
 from app.services import b2b_client
 
 router = APIRouter()
@@ -51,8 +58,6 @@ async def _enrich_cart(cart: Cart, db: AsyncSession) -> CartOut:
         product = await b2b_client.get_product(str(item.product_id))
 
         if not product or product.get("status") != "MODERATED" or product.get("deleted"):
-            # Карточки продукта может не быть вовсе (true 404) — тогда нет
-            # никаких данных о названии, иначе берём то, что есть в product.
             fallback_name = (
                 (product.get("title") or product.get("name")) if product else None
             ) or "Товар недоступен"
@@ -141,7 +146,26 @@ async def add_to_cart(
         )
     )
     if existing:
-        existing.quantity += body.quantity
+        # Проверяем остаток: existing.quantity + body.quantity <= active_quantity
+        sku = await b2b_client.get_sku_public(str(body.sku_id))
+        if not sku:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "NOT_FOUND", "message": "SKU not found"},
+            )
+        active_quantity = sku.get("active_quantity", 0)
+        new_quantity = existing.quantity + body.quantity
+        if new_quantity > active_quantity:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "INSUFFICIENT_STOCK",
+                    "message": "Недостаточно остатков",
+                    "available": active_quantity,
+                    "requested": new_quantity,
+                },
+            )
+        existing.quantity = new_quantity
     else:
         # Контракт не передаёт product_id — резолвим его сами через B2B.
         sku = await b2b_client.get_sku_public(str(body.sku_id))
@@ -149,6 +173,17 @@ async def add_to_cart(
             raise HTTPException(
                 status_code=404,
                 detail={"code": "NOT_FOUND", "message": "SKU not found"},
+            )
+        active_quantity = sku.get("active_quantity", 0)
+        if body.quantity > active_quantity:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "INSUFFICIENT_STOCK",
+                    "message": "Недостаточно остатков",
+                    "available": active_quantity,
+                    "requested": body.quantity,
+                },
             )
         item = CartItem(
             cart_id=cart.id,
@@ -179,6 +214,98 @@ async def get_cart(
         return CartOut(items=[], items_count=0, subtotal=0, is_valid=True)
 
     return await _enrich_cart(cart, db)
+
+
+@router.post("/cart/validate", response_model=CartValidationResponse)
+async def validate_cart(
+    buyer: OptionalBuyer,
+    db: DB,
+    x_session_id: str | None = Header(default=None),
+) -> CartValidationResponse:
+    """Проверяет актуальность цен и остатков перед чекаутом.
+
+    Проходит по всем позициям корзины и собирает список проблем:
+    - PRODUCT_BLOCKED / PRODUCT_DELETED — товар заблокирован или удалён
+    - OUT_OF_STOCK — active_quantity == 0
+    - QUANTITY_REDUCED — active_quantity < запрошенного quantity
+    - PRICE_CHANGED — цена в B2B изменилась (если в CartItem хранится старая цена)
+    """
+    if buyer:
+        cart = await db.scalar(select(Cart).where(Cart.buyer_id == buyer.id))
+    elif x_session_id:
+        cart = await db.scalar(select(Cart).where(Cart.session_id == x_session_id))
+    else:
+        empty = CartOut(items=[], items_count=0, subtotal=0, is_valid=True)
+        return CartValidationResponse(is_valid=True, cart=empty, issues=[])
+
+    if not cart:
+        empty = CartOut(items=[], items_count=0, subtotal=0, is_valid=True)
+        return CartValidationResponse(is_valid=True, cart=empty, issues=[])
+
+    items_res = await db.execute(select(CartItem).where(CartItem.cart_id == cart.id))
+    items_db = items_res.scalars().all()
+
+    issues: list[CartValidationIssue] = []
+
+    for item in items_db:
+        product = await b2b_client.get_product(str(item.product_id))
+
+        if not product:
+            issues.append(CartValidationIssue(
+                sku_id=item.sku_id,
+                type="PRODUCT_DELETED",
+                message="Товар удалён и недоступен для заказа",
+            ))
+            continue
+
+        if product.get("deleted"):
+            issues.append(CartValidationIssue(
+                sku_id=item.sku_id,
+                type="PRODUCT_DELETED",
+                message="Товар удалён и недоступен для заказа",
+            ))
+            continue
+
+        if product.get("status") != "MODERATED":
+            issues.append(CartValidationIssue(
+                sku_id=item.sku_id,
+                type="PRODUCT_BLOCKED",
+                message="Товар заблокирован и недоступен для заказа",
+            ))
+            continue
+
+        sku = next(
+            (s for s in product.get("skus", []) if s["id"] == str(item.sku_id)),
+            None,
+        )
+        if not sku:
+            issues.append(CartValidationIssue(
+                sku_id=item.sku_id,
+                type="PRODUCT_BLOCKED",
+                message="SKU не найден в товаре",
+            ))
+            continue
+
+        active_qty = sku.get("active_quantity", 0)
+        if active_qty <= 0:
+            issues.append(CartValidationIssue(
+                sku_id=item.sku_id,
+                type="OUT_OF_STOCK",
+                message="Товар закончился на складе",
+            ))
+        elif item.quantity > active_qty:
+            issues.append(CartValidationIssue(
+                sku_id=item.sku_id,
+                type="QUANTITY_REDUCED",
+                message=f"Доступно только {active_qty} шт.",
+                old_value=item.quantity,
+                new_value=active_qty,
+            ))
+
+    cart_out = await _enrich_cart(cart, db)
+    is_valid = len(issues) == 0
+
+    return CartValidationResponse(is_valid=is_valid, cart=cart_out, issues=issues)
 
 
 @router.delete("/cart/items/{sku_id}", status_code=200, response_model=CartOut)
@@ -307,6 +434,25 @@ async def update_cart_item(
     )
     if not item:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Item not in cart"})
+
+    # Проверяем остаток перед обновлением quantity
+    sku = await b2b_client.get_sku_public(str(sku_id))
+    if not sku:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "NOT_FOUND", "message": "SKU not found"},
+        )
+    active_quantity = sku.get("active_quantity", 0)
+    if body.quantity > active_quantity:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "INSUFFICIENT_STOCK",
+                "message": "Недостаточно остатков",
+                "available": active_quantity,
+                "requested": body.quantity,
+            },
+        )
 
     # Контракт: quantity >= 1; удаление делается через DELETE, а не quantity<=0.
     item.quantity = body.quantity
