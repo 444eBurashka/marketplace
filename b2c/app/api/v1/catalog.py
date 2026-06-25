@@ -129,30 +129,43 @@ async def get_product(product_id: uuid.UUID) -> dict:
 
     skus = data.get("skus", [])
 
-    # Вычисляем агрегированные поля для карточки товара
-    prices = [s.get("price", 0) for s in skus if s.get("price") is not None and s.get("quantity", 0) > 0]
+    # Вычисляем агрегированные поля для карточки товара.
+    # B2B SKUPublicResponse отдаёт остаток в поле active_quantity (b2b/openapi.yaml:1557),
+    # а не quantity — используем именно его.
+    prices = [s.get("price", 0) for s in skus if s.get("price") is not None and s.get("active_quantity", 0) > 0]
     min_price = min(prices) if prices else 0
-    has_stock = any(s.get("quantity", 0) > 0 for s in skus)
+    has_stock = any(s.get("active_quantity", 0) > 0 for s in skus)
 
-    # Маппинг B2B → B2C для SKU: только безопасные поля
+    # Маппинг B2B → B2C для SKU (CatalogSku, b2c/openapi.yaml:1084).
+    # Обязательные: id, price, available_quantity.
+    # Опциональные: name, sku_code, old_price, attributes, images.
+    # cost_price и reserved_quantity НЕ включаем — утечка данных продавца.
     b2c_skus = []
     for sku in skus:
-        qty = sku.get("quantity", 0)
-        b2c_sku = {
+        qty = sku.get("active_quantity", 0)   # B2B: active_quantity (b2b/openapi.yaml:1557)
+        b2c_sku: dict = {
             "id": sku.get("id"),
-            "code": sku.get("code", ""),
             "price": sku.get("price", 0),
-            "discount": sku.get("discount", 0),
-            "available_quantity": qty,
-            "in_stock": qty > 0,
-            # is_active необходим для фильтрации на фронте
-            "is_active": sku.get("is_active", True),
+            "available_quantity": qty,         # B2C: available_quantity (b2c/openapi.yaml:1093)
         }
-        # attributes — опциональные характеристики варианта (цвет, размер)
-        if "attributes" in sku:
-            b2c_sku["attributes"] = sku["attributes"]
+        # sku_code ← B2B article (b2b/openapi.yaml:1558; b2c/openapi.yaml:1090)
+        article = sku.get("article")
+        if article is not None:
+            b2c_sku["sku_code"] = article
+        # name — опциональное поле SKU (вариант «красный / M»)
+        if "name" in sku:
+            b2c_sku["name"] = sku["name"]
+        # old_price — зачёркнутая цена (опционально, b2c/openapi.yaml:1092)
+        if "old_price" in sku:
+            b2c_sku["old_price"] = sku["old_price"]
+        # characteristics → attributes (характеристики варианта: цвет, размер)
+        characteristics = sku.get("characteristics")
+        if characteristics:
+            b2c_sku["attributes"] = characteristics
+        # images SKU (опционально)
+        if "images" in sku:
+            b2c_sku["images"] = sku["images"]
         b2c_skus.append(b2c_sku)
-        # cost_price и reserved_quantity НЕ включаем — утечка данных продавца
 
     return {
         "id": data.get("id"),

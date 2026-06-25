@@ -89,22 +89,24 @@ async def test_empty_results_returns_200(client: AsyncClient):
         assert r.json()["items"] == []
 
 
+# Фикстуры повторяют форму настоящего B2B SKUPublicResponse (b2b/openapi.yaml:1536):
+# active_quantity — остаток за вычетом резерва, article — артикул.
 MOCK_PRODUCT = {
     "id": PRODUCT_ID, "title": "Phone", "slug": "phone", "description": "desc",
     "category_id": CATEGORY_ID, "status": "MODERATED", "deleted": False,
-    "images": [{"url": "https://example.com/img.jpg"}],
-    "skus": [{"id": SKU_ID, "code": "SKU1", "price": 1000, "cost_price": 500,
-              "discount": 0, "quantity": 10, "reserved_quantity": 0,
-              "is_active": True, "attributes": []}],
+    "images": [{"id": "img-1", "url": "https://example.com/img.jpg", "ordering": 1}],
+    "skus": [{"id": SKU_ID, "article": "SKU1", "name": "Phone Red", "price": 1000,
+              "discount": 0, "active_quantity": 10, "stock_quantity": 10,
+              "images": [], "characteristics": []}],
 }
 
 MOCK_PRODUCT_NO_STOCK = {
     "id": PRODUCT_ID, "title": "Phone", "slug": "phone", "description": "desc",
     "category_id": CATEGORY_ID, "status": "MODERATED", "deleted": False,
     "images": [],
-    "skus": [{"id": SKU_ID, "code": "SKU1", "price": 1000, "cost_price": 500,
-              "discount": 10, "quantity": 0, "reserved_quantity": 0,
-              "is_active": True, "attributes": []}],
+    "skus": [{"id": SKU_ID, "article": "SKU1", "name": "Phone Red", "price": 1000,
+              "discount": 10, "active_quantity": 0, "stock_quantity": 5,
+              "images": [], "characteristics": []}],
 }
 
 
@@ -127,9 +129,9 @@ async def test_product_card_returns_full_data_with_skus(client: AsyncClient):
         sku = data["skus"][0]
         assert sku["id"] == SKU_ID
         assert sku["price"] == 1000
-        assert sku["discount"] == 0
+        assert sku["sku_code"] == "SKU1"
         assert sku["available_quantity"] == 10
-        assert sku["in_stock"] is True
+        assert "in_stock" not in sku
 
 
 @pytest.mark.asyncio
