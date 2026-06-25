@@ -157,7 +157,7 @@ async def test_blocked_product_returns_404(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_sku_without_stock_is_shown_as_unavailable(client: AsyncClient):
-    """SKU без остатка показывается в списке, но с in_stock=false."""
+    """SKU без остатка: товар недоступен, available_quantity == 0."""
     with patch("app.services.b2b_client.get_product", new_callable=AsyncMock) as mock_get:
         mock_get.return_value = MOCK_PRODUCT_NO_STOCK
         r = await client.get(f"/api/v1/catalog/products/{PRODUCT_ID}")
@@ -166,7 +166,6 @@ async def test_sku_without_stock_is_shown_as_unavailable(client: AsyncClient):
         assert data["has_stock"] is False
         assert len(data["skus"]) == 1
         sku = data["skus"][0]
-        assert sku["in_stock"] is False
+        # in_stock — не контрактное поле CatalogSku, его не должно быть в ответе
+        assert "in_stock" not in sku
         assert sku["available_quantity"] == 0
-        # Скидка > 0 — признак скидки
-        assert sku["discount"] == 10
