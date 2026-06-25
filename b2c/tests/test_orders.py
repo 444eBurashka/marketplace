@@ -268,8 +268,16 @@ def make_order_snapshot():
     }
 
 
+def assert_full_order_response(data: dict) -> None:
+    """Проверяет, что тело ответа содержит все обязательные поля OrderResponse."""
+    required = ("id", "buyer_id", "status", "items", "subtotal", "total", "address", "created_at")
+    for field in required:
+        assert field in data, f"Обязательное поле '{field}' отсутствует в ответе отмены"
+
+
 @pytest.mark.asyncio
 async def test_cancel_paid_order_transitions_to_cancelled(client: AsyncClient, db_session: AsyncSession):
+    """Happy path PAID → CANCELLED; ответ — полный OrderResponse."""
     buyer, _, token = await create_buyer_with_address(db_session)
     order = Order(
         number="ORD-CANCEL-001",
@@ -291,11 +299,14 @@ async def test_cancel_paid_order_transitions_to_cancelled(client: AsyncClient, d
         )
 
     assert r.status_code == 200
-    assert r.json()["status"] == "CANCELLED"
+    data = r.json()
+    assert data["status"] == "CANCELLED"
+    assert_full_order_response(data)
 
 
 @pytest.mark.asyncio
 async def test_unreserve_failure_transitions_to_cancel_pending(client: AsyncClient, db_session: AsyncSession):
+    """B2B недоступен → CANCEL_PENDING; ответ — полный OrderResponse."""
     buyer, _, token = await create_buyer_with_address(db_session)
     order = Order(
         number="ORD-CANCEL-002",
@@ -317,17 +328,47 @@ async def test_unreserve_failure_transitions_to_cancel_pending(client: AsyncClie
         )
 
     assert r.status_code == 200
-    assert r.json()["status"] == "CANCEL_PENDING"
+    data = r.json()
+    assert data["status"] == "CANCEL_PENDING"
+    assert_full_order_response(data)
 
 
 @pytest.mark.asyncio
-async def test_cancel_assembling_order_returns_409(client: AsyncClient, db_session: AsyncSession):
+async def test_cancel_assembling_order_succeeds(client: AsyncClient, db_session: AsyncSession):
+    """ASSEMBLING теперь отменяем (контракт обновлён 2026-06-14)."""
     buyer, _, token = await create_buyer_with_address(db_session)
     order = Order(
         number="ORD-CANCEL-003",
         buyer_id=buyer.id,
         idempotency_key=uuid.uuid4(),
         status=OrderStatus.ASSEMBLING,
+        address_snapshot=make_order_snapshot(),
+        subtotal=1000,
+        total=1000,
+    )
+    db_session.add(order)
+    await db_session.flush()
+
+    with patch("app.services.b2b_client.unreserve", AsyncMock(return_value=200)):
+        r = await client.post(
+            f"/api/v1/orders/{order.id}/cancel",
+            json={"reason": "changed mind"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert r.status_code == 200
+    assert r.json()["status"] == "CANCELLED"
+
+
+@pytest.mark.asyncio
+async def test_cancel_delivered_order_returns_409(client: AsyncClient, db_session: AsyncSession):
+    """DELIVERED → 409 CANCEL_NOT_ALLOWED (не отменяем)."""
+    buyer, _, token = await create_buyer_with_address(db_session)
+    order = Order(
+        number="ORD-CANCEL-004",
+        buyer_id=buyer.id,
+        idempotency_key=uuid.uuid4(),
+        status=OrderStatus.DELIVERED,
         address_snapshot={},
         subtotal=0,
         total=0,
@@ -337,22 +378,23 @@ async def test_cancel_assembling_order_returns_409(client: AsyncClient, db_sessi
 
     r = await client.post(
         f"/api/v1/orders/{order.id}/cancel",
-        json={"reason": "changed mind"},
+        json={"reason": "too late"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 409
     assert r.json()["code"] == "CANCEL_NOT_ALLOWED"
-    assert r.json()["current_status"] == "ASSEMBLING"
+    assert r.json()["current_status"] == "DELIVERED"
 
 
 @pytest.mark.asyncio
 async def test_other_user_cancel_returns_404(client: AsyncClient, db_session: AsyncSession):
+    """Чужой заказ при отмене → 404 (IDOR-защита)."""
     buyer1, _, token1 = await create_buyer_with_address(db_session)
     buyer2 = Buyer(email="other2@test.com", hashed_password=hash_password("pass1234"))
     db_session.add(buyer2)
     await db_session.flush()
     order = Order(
-        number="ORD-CANCEL-004",
+        number="ORD-CANCEL-005",
         buyer_id=buyer2.id,
         idempotency_key=uuid.uuid4(),
         status=OrderStatus.PAID,

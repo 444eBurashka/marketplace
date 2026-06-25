@@ -256,9 +256,14 @@ async def get_order(order_id: uuid.UUID, buyer: CurrentBuyer, db: DB) -> dict:
 
 # ─── US-ORD-03: Отмена заказа ────────────────────────────────────────────────
 
+# По контракту b2c-orders-flows.md (обновление 2026-06-14):
+# отменяемы CREATED, PAID, ASSEMBLING, DELIVERING;
+# 409 только для DELIVERED, CANCELLED, CANCEL_PENDING.
 CANCELLABLE_STATUSES = {
     OrderStatus.CREATED,
     OrderStatus.PAID,
+    OrderStatus.ASSEMBLING,
+    OrderStatus.DELIVERING,
 }
 
 @router.post("/orders/{order_id}/cancel")
@@ -269,7 +274,9 @@ async def cancel_order(
     db: DB,
 ) -> dict:
     result = await db.execute(
-        select(Order).where(Order.id == order_id, Order.buyer_id == buyer.id)
+        select(Order)
+        .where(Order.id == order_id, Order.buyer_id == buyer.id)
+        .options(selectinload(Order.items))   # нужны items для OrderResponse
     )
     order = result.scalar_one_or_none()
     if not order:
@@ -285,10 +292,9 @@ async def cancel_order(
             },
         )
 
-    result_items = await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
     items_for_unreserve = [
         {"sku_id": str(i.sku_id), "quantity": i.quantity}
-        for i in result_items.scalars().all()
+        for i in order.items
     ]
     unreserve_status = await b2b_client.unreserve(str(order.id), items_for_unreserve)
 
@@ -301,7 +307,12 @@ async def cancel_order(
         order.status = OrderStatus.CANCEL_PENDING
         db.add(OrderStatusHistory(order_id=order.id, status=OrderStatus.CANCEL_PENDING))
 
-    return {"id": str(order.id), "status": order.status.value}
+    # Возвращаем полный OrderResponse — address уже хранится в снимке в нужной форме
+    return _build_order_response(
+        order=order,
+        items_data=_order_items_to_response(order.items),
+        address_response=order.address_snapshot,
+    )
 
 
 # ─── US-ORD-04: События от B2B ───────────────────────────────────────────────
