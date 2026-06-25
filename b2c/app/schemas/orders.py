@@ -10,7 +10,7 @@ class CheckoutItemIn(BaseModel):
 class CheckoutRequest(BaseModel):
     items: list[CheckoutItemIn] = []   # ← необязателен (спецификация не требует)
     address_id: uuid.UUID
-    payment_method_id: uuid.UUID | None = None
+    payment_method_id: uuid.UUID  # ← ОБЯЗАТЕЛЬНОЕ поле (без None, без дефолта)
 
 
 class OrderItemOut(BaseModel):
@@ -39,6 +39,6 @@ class CancelRequest(BaseModel):
 
 class ProductEventRequest(BaseModel):
     idempotency_key: uuid.UUID
-    event_type: str   # "PRODUCT_BLOCKED" | "PRODUCT_DELETED" | "OUT_OF_STOCK"
+    event_type: str   # "PRODUCT_BLOCKED" | "PRODUCT_DELETED" | "SKU_OUT_OF_STOCK"
     product_id: uuid.UUID
     sku_ids: list[uuid.UUID] = []
