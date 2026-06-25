@@ -45,6 +45,27 @@ async def get_product(product_id: str) -> dict | None:
             raise HTTPException(status_code=502, detail="B2B service unavailable")
 
 
+async def get_sku_public(sku_id: str) -> dict | None:
+    """GET /api/v1/public/skus/{sku_id} — витринный SKU (используется, чтобы
+    резолвить product_id по sku_id при добавлении в корзину, раз контракт
+    POST /cart/items не передаёт product_id)."""
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.get(
+                f"{_B2B_URL}/api/v1/public/skus/{sku_id}",
+                headers=_HEADERS,
+                timeout=10.0,
+            )
+            if r.status_code == 404:
+                return None
+            if r.status_code >= 500:
+                raise HTTPException(status_code=502, detail="B2B service unavailable")
+            r.raise_for_status()
+            return r.json()
+        except httpx.ConnectError:
+            raise HTTPException(status_code=502, detail="B2B service unavailable")
+
+
 async def get_catalog_facets(params: dict) -> dict:
     """GET /api/v1/catalog/facets."""
     async with httpx.AsyncClient() as client:

@@ -3,7 +3,6 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import delete, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import CurrentBuyer, OptionalBuyer
@@ -45,21 +44,30 @@ async def _enrich_cart(cart: Cart, db: AsyncSession) -> CartOut:
 
     enriched: list[CartItemOut] = []
     subtotal = 0
+    items_count = 0
 
     for item in items_db:
+        items_count += item.quantity
         product = await b2b_client.get_product(str(item.product_id))
 
         if not product or product.get("status") != "MODERATED" or product.get("deleted"):
+            # Карточки продукта может не быть вовсе (true 404) — тогда нет
+            # никаких данных о названии, иначе берём то, что есть в product.
+            fallback_name = (
+                (product.get("title") or product.get("name")) if product else None
+            ) or "Товар недоступен"
             enriched.append(CartItemOut(
                 id=item.id,
                 sku_id=item.sku_id,
                 product_id=item.product_id,
                 quantity=item.quantity,
+                name=fallback_name,
                 available=False,
                 unavailable_reason="PRODUCT_BLOCKED",
             ))
             continue
 
+        product_name = product.get("title") or product.get("name", "")
         sku = next((s for s in product.get("skus", []) if s["id"] == str(item.sku_id)), None)
         if not sku:
             enriched.append(CartItemOut(
@@ -67,14 +75,17 @@ async def _enrich_cart(cart: Cart, db: AsyncSession) -> CartOut:
                 sku_id=item.sku_id,
                 product_id=item.product_id,
                 quantity=item.quantity,
+                name=product_name or "Товар недоступен",
                 available=False,
                 unavailable_reason="SKU_NOT_FOUND",
             ))
             continue
 
         price = sku.get("price", 0)
-        qty_available = sku.get("quantity", 0) - sku.get("reserved_quantity", 0)
-        name = product.get("title") or product.get("name", "")
+        # Витринный SKU не содержит reserved_quantity — доступный остаток
+        # для покупателя это active_quantity (см. SKUPublicResponse).
+        qty_available = sku.get("active_quantity", 0)
+        name = sku.get("name") or product_name
 
         if qty_available <= 0:
             enriched.append(CartItemOut(
@@ -108,7 +119,7 @@ async def _enrich_cart(cart: Cart, db: AsyncSession) -> CartOut:
 
     return CartOut(
         items=enriched,
-        items_count=len(enriched),
+        items_count=items_count,
         subtotal=subtotal,
         is_valid=all(i.available for i in enriched),
     )
@@ -132,10 +143,17 @@ async def add_to_cart(
     if existing:
         existing.quantity += body.quantity
     else:
+        # Контракт не передаёт product_id — резолвим его сами через B2B.
+        sku = await b2b_client.get_sku_public(str(body.sku_id))
+        if not sku:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "NOT_FOUND", "message": "SKU not found"},
+            )
         item = CartItem(
             cart_id=cart.id,
             sku_id=body.sku_id,
-            product_id=body.product_id,
+            product_id=sku["product_id"],
             quantity=body.quantity,
         )
         db.add(item)
@@ -206,25 +224,26 @@ async def clear_cart(
         await db.execute(delete(CartItem).where(CartItem.cart_id == cart.id))
 
 
-@router.post("/cart/merge")
+@router.post("/cart/merge", response_model=CartOut)
 async def merge_cart(
     buyer: CurrentBuyer,
     db: DB,
     x_session_id: str | None = Header(default=None),
-) -> dict:
+) -> CartOut:
     """Объединяет гостевую корзину с авторизованной при логине."""
     if not x_session_id:
-        return {"merged": 0}
+        return await _get_or_create_cart_response(db, buyer)
 
     guest_cart = await db.scalar(select(Cart).where(Cart.session_id == x_session_id))
     if not guest_cart:
-        return {"merged": 0}
+        return await _get_or_create_cart_response(db, buyer)
 
     auth_cart = await db.scalar(select(Cart).where(Cart.buyer_id == buyer.id))
     if not auth_cart:
         guest_cart.buyer_id = buyer.id
         guest_cart.session_id = None
-        return {"merged": 0}
+        await db.flush()
+        return await _enrich_cart(guest_cart, db)
 
     # Мёрж: берём MAX(guest, auth) для каждого SKU
     guest_items_res = await db.execute(select(CartItem).where(CartItem.cart_id == guest_cart.id))
@@ -250,18 +269,26 @@ async def merge_cart(
 
     await db.execute(delete(CartItem).where(CartItem.cart_id == guest_cart.id))
     await db.delete(guest_cart)
+    await db.flush()
 
-    return {"merged": len(guest_items)}
+    return await _enrich_cart(auth_cart, db)
 
 
-@router.patch("/cart/items/{sku_id}", status_code=200)
+async def _get_or_create_cart_response(db: AsyncSession, buyer: Buyer) -> CartOut:
+    auth_cart = await db.scalar(select(Cart).where(Cart.buyer_id == buyer.id))
+    if not auth_cart:
+        return CartOut(items=[], items_count=0, subtotal=0, is_valid=True)
+    return await _enrich_cart(auth_cart, db)
+
+
+@router.patch("/cart/items/{sku_id}", status_code=200, response_model=CartOut)
 async def update_cart_item(
     sku_id: uuid.UUID,
     body: CartItemUpdate,
     buyer: OptionalBuyer,
     db: DB,
     x_session_id: str | None = Header(default=None),
-) -> dict:
+) -> CartOut:
     if buyer:
         cart = await db.scalar(select(Cart).where(Cart.buyer_id == buyer.id))
     elif x_session_id:
@@ -281,9 +308,7 @@ async def update_cart_item(
     if not item:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Item not in cart"})
 
-    if body.quantity <= 0:
-        await db.execute(delete(CartItem).where(CartItem.id == item.id))
-        return {"sku_id": str(sku_id), "quantity": 0}
-
+    # Контракт: quantity >= 1; удаление делается через DELETE, а не quantity<=0.
     item.quantity = body.quantity
-    return {"sku_id": str(sku_id), "quantity": item.quantity}
+    await db.flush()
+    return await _enrich_cart(cart, db)
