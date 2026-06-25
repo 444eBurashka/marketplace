@@ -1,4 +1,5 @@
 import uuid
+from typing import Literal
 from pydantic import BaseModel, Field
 
 
@@ -30,7 +31,7 @@ class SubscriptionOut(BaseModel):
 class CartItemIn(BaseModel):
     """Body for POST /cart/items. Контракт: required только [sku_id, quantity]."""
     sku_id: uuid.UUID
-    quantity: int = 1
+    quantity: int = Field(default=1, ge=1)
 
 
 class CartItemOut(BaseModel):
@@ -58,3 +59,28 @@ class CartOut(BaseModel):
 class CartItemUpdate(BaseModel):
     """Body for PATCH /cart/items/{sku_id}. Контракт: quantity >= 1 (удаление — через DELETE)."""
     quantity: int = Field(ge=1)
+
+
+# ── Валидация корзины перед чекаутом ──────────────────────────────────────────
+
+CartValidationIssueType = Literal[
+    "PRICE_CHANGED",
+    "OUT_OF_STOCK",
+    "QUANTITY_REDUCED",
+    "PRODUCT_BLOCKED",
+    "PRODUCT_DELETED",
+]
+
+
+class CartValidationIssue(BaseModel):
+    sku_id: uuid.UUID
+    type: CartValidationIssueType
+    message: str
+    old_value: int | str | None = None
+    new_value: int | str | None = None
+
+
+class CartValidationResponse(BaseModel):
+    is_valid: bool
+    cart: CartOut
+    issues: list[CartValidationIssue]
