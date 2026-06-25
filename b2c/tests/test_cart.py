@@ -25,8 +25,8 @@ SKU = "00000000-0000-0000-0000-000000000010"
 PRODUCT = "00000000-0000-0000-0000-000000000011"
 
 
-def _mock_product(*, sku_id: str | None = None, price: int = 1000, stock: int = 10,
-                  reserved: int = 0, title: str = "Test Product",
+def _mock_product(*, sku_id: str | None = None, price: int = 1000, active_quantity: int = 10,
+                  title: str = "Test Product", sku_name: str = "Test Product / Test SKU",
                   status: str = "MODERATED", deleted: bool = False) -> dict:
     sku_id = sku_id or SKU
     return {
@@ -36,16 +36,26 @@ def _mock_product(*, sku_id: str | None = None, price: int = 1000, stock: int = 
         "deleted": deleted,
         "skus": [{
             "id": sku_id,
+            "name": sku_name,
             "price": price,
-            "quantity": stock,
-            "reserved_quantity": reserved,
+            "active_quantity": active_quantity,
         }],
     }
 
 
 def _mock_b2b(**kwargs):
-    """Decorator/context-manager helper: patch b2b_client.get_product."""
-    return patch("app.services.b2b_client.get_product", AsyncMock(return_value=_mock_product(**kwargs)))
+    """Decorator/context-manager helper: patch B2B calls used by cart endpoints.
+
+    Patches get_product (используется при enrich) и get_sku_public
+    (используется при добавлении в корзину для резолва product_id по sku_id,
+    т.к. контракт POST /cart/items не принимает product_id)."""
+    product = _mock_product(**kwargs)
+    sku_public = {**product["skus"][0], "product_id": product["id"]}
+    return patch.multiple(
+        "app.services.b2b_client",
+        get_product=AsyncMock(return_value=product),
+        get_sku_public=AsyncMock(return_value=sku_public),
+    )
 
 
 # ─────────────────────────────
@@ -56,7 +66,7 @@ def _mock_b2b(**kwargs):
 async def test_add_sku_increments_quantity_if_already_in_cart(client: AsyncClient, db_session: AsyncSession):
     """Добавление одного SKU дважды увеличивает quantity."""
     buyer, token = await create_buyer(db_session, "inc@test.com")
-    payload = {"sku_id": SKU, "product_id": PRODUCT, "quantity": 1}
+    payload = {"sku_id": SKU, "quantity": 1}
 
     with _mock_b2b(price=500):
         r1 = await client.post("/api/v1/cart/items", json=payload, headers={"Authorization": f"Bearer {token}"})
@@ -73,7 +83,7 @@ async def test_add_sku_increments_quantity_if_already_in_cart(client: AsyncClien
     data2 = r2.json()
     assert data2["items"][0]["quantity"] == 2
     assert data2["subtotal"] == 1000
-    assert data2["items_count"] == 1
+    assert data2["items_count"] == 2
 
 
 @pytest.mark.asyncio
@@ -84,7 +94,7 @@ async def test_get_cart_enriched_with_b2b_data(client: AsyncClient, db_session: 
     with _mock_b2b(price=1500):
         await client.post(
             "/api/v1/cart/items",
-            json={"sku_id": SKU, "product_id": PRODUCT, "quantity": 2},
+            json={"sku_id": SKU, "quantity": 2},
             headers={"Authorization": f"Bearer {token}"},
         )
 
@@ -95,7 +105,7 @@ async def test_get_cart_enriched_with_b2b_data(client: AsyncClient, db_session: 
     data = r.json()
     assert len(data["items"]) == 1
     item = data["items"][0]
-    assert item["name"] == "Test Product"
+    assert item["name"] == "Test Product / Test SKU"
     assert item["unit_price"] == 1500
     assert item["line_total"] == 3000
     assert item["available_quantity"] == 10
@@ -114,12 +124,15 @@ async def test_unavailable_sku_shown_with_reason(client: AsyncClient, db_session
     with _mock_b2b():
         await client.post(
             "/api/v1/cart/items",
-            json={"sku_id": SKU, "product_id": PRODUCT, "quantity": 1},
+            json={"sku_id": SKU, "quantity": 1},
             headers={"Authorization": f"Bearer {token}"},
         )
 
-    # B2B вернул None — товар не найден
-    with patch("app.services.b2b_client.get_product", AsyncMock(return_value=None)):
+    # B2B вернул None — товар не найден / заблокирован
+    with patch.multiple(
+        "app.services.b2b_client",
+        get_product=AsyncMock(return_value=None),
+    ):
         r = await client.get("/api/v1/cart", headers={"Authorization": f"Bearer {token}"})
 
     assert r.status_code == 200
@@ -128,8 +141,8 @@ async def test_unavailable_sku_shown_with_reason(client: AsyncClient, db_session
     item = data["items"][0]
     assert item["available"] is False
     assert item["unavailable_reason"] == "PRODUCT_BLOCKED"
-    # Обязательные поля spec даже для недоступных
-    assert "name" in item
+    # Обязательные поля spec даже для недоступных — name непустой
+    assert item["name"]
     assert "unit_price" in item
     assert "line_total" in item
     assert "available_quantity" in item
@@ -148,7 +161,7 @@ async def test_guest_cart_merged_on_login(client: AsyncClient, db_session: Async
     with _mock_b2b():
         await client.post(
             "/api/v1/cart/items",
-            json={"sku_id": SKU, "product_id": PRODUCT, "quantity": 1},
+            json={"sku_id": SKU, "quantity": 1},
             headers={"Authorization": f"Bearer {token}"},
         )
 
@@ -156,23 +169,29 @@ async def test_guest_cart_merged_on_login(client: AsyncClient, db_session: Async
     with _mock_b2b():
         await client.post(
             "/api/v1/cart/items",
-            json={"sku_id": SKU, "product_id": PRODUCT, "quantity": 3},
+            json={"sku_id": SKU, "quantity": 3},
             headers={"X-Session-Id": session_id},
         )
 
-    # Шаг 3: merge — берём MAX(1, 3) = 3
-    r = await client.post(
-        "/api/v1/cart/merge",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "X-Session-Id": session_id,
-        },
-    )
+    # Шаг 3: merge — берём MAX(1, 3) = 3, ответ — полная корзина
+    with _mock_b2b():
+        r = await client.post(
+            "/api/v1/cart/merge",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-Session-Id": session_id,
+            },
+        )
     assert r.status_code == 200
-    assert r.json()["merged"] == 1
+    merged_data = r.json()
+    assert len(merged_data["items"]) == 1
+    assert merged_data["items"][0]["quantity"] == 3
+    assert "items_count" in merged_data
+    assert "subtotal" in merged_data
+    assert "is_valid" in merged_data
 
     # Шаг 4: проверяем quantity стал 3
-    with _mock_b2b(stock=20):
+    with _mock_b2b(active_quantity=20):
         r = await client.get("/api/v1/cart", headers={"Authorization": f"Bearer {token}"})
 
     assert r.status_code == 200
@@ -181,7 +200,7 @@ async def test_guest_cart_merged_on_login(client: AsyncClient, db_session: Async
     assert data["items"][0]["quantity"] == 3
 
     # Сессионная корзина удалена
-    with _mock_b2b(stock=20):
+    with _mock_b2b(active_quantity=20):
         guest_r = await client.get("/api/v1/cart", headers={"X-Session-Id": session_id})
     assert guest_r.status_code == 200
     assert len(guest_r.json()["items"]) == 0
@@ -199,7 +218,7 @@ async def test_delete_cart_item_returns_cart(client: AsyncClient, db_session: As
     with _mock_b2b():
         await client.post(
             "/api/v1/cart/items",
-            json={"sku_id": SKU, "product_id": PRODUCT, "quantity": 2},
+            json={"sku_id": SKU, "quantity": 2},
             headers={"Authorization": f"Bearer {token}"},
         )
 
