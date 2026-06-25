@@ -66,6 +66,28 @@ async def get_sku_public(sku_id: str) -> dict | None:
             raise HTTPException(status_code=502, detail="B2B service unavailable")
 
 
+async def get_product_by_sku(sku_id: str) -> dict | None:
+    """GET /api/v1/public/skus/{sku_id}/product — получить товар по SKU.
+
+    Используется при создании заказа для получения информации о товаре по SKU.
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.get(
+                f"{_B2B_URL}/api/v1/public/skus/{sku_id}/product",
+                headers=_HEADERS,
+                timeout=10.0,
+            )
+            if r.status_code == 404:
+                return None
+            if r.status_code >= 500:
+                raise HTTPException(status_code=502, detail="B2B service unavailable")
+            r.raise_for_status()
+            return r.json()
+        except httpx.ConnectError:
+            raise HTTPException(status_code=502, detail="B2B service unavailable")
+
+
 async def get_catalog_facets(params: dict) -> dict:
     """GET /api/v1/catalog/facets."""
     async with httpx.AsyncClient() as client:
@@ -134,7 +156,7 @@ async def fulfill(order_id: str, items: list[dict]) -> int:
         try:
             r = await client.post(
                 f"{_B2B_URL}/api/v1/inventory/fulfill",
-                json={"order_id": order_id, "items": items},   # ← обязательное тело
+                json={"order_id": order_id, "items": items},
                 headers=_HEADERS,
                 timeout=10.0,
             )

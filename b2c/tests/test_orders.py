@@ -35,7 +35,7 @@ def expected_address_response(address: Address) -> dict:
     return {
         "id": str(address.id),
         "created_at": address.created_at.isoformat(),
-        "country": "",           # пока поля нет в модели — пустая строка
+        "country": "",  # пока поля нет в модели — пустая строка
         "city": address.city,
         "street": address.street,
         "building": address.building,
@@ -46,6 +46,14 @@ def expected_address_response(address: Address) -> dict:
 
 
 # ─── US-ORD-01: Checkout ─────────────────────────────────────────────────────
+
+MOCK_SKU = {
+    "id": "00000000-0000-0000-0000-000000000010",
+    "product_id": "00000000-0000-0000-0000-000000000099",
+    "price": 1000,
+    "attributes": [],
+    "active_quantity": 10,
+}
 
 MOCK_PRODUCT = {
     "id": "00000000-0000-0000-0000-000000000099",
@@ -67,14 +75,20 @@ MOCK_RESERVE_503 = {"status_code": 503, "body": {}}
 async def test_checkout_happy_path_returns_201_with_full_order(client: AsyncClient, db_session: AsyncSession):
     """Happy path: заказ создаётся, ответ содержит все обязательные поля OrderResponse."""
     buyer, address, token = await create_buyer_with_address(db_session)
+    payment_method_id = uuid.uuid4()
 
     with (
-        patch("app.services.b2b_client.get_product_by_sku", AsyncMock(return_value=MOCK_PRODUCT)),
+        patch("app.services.b2b_client.get_sku_public", AsyncMock(return_value=MOCK_SKU)),
+        patch("app.services.b2b_client.get_product", AsyncMock(return_value=MOCK_PRODUCT)),
         patch("app.services.b2b_client.reserve", AsyncMock(return_value=MOCK_RESERVE_OK)),
     ):
         r = await client.post(
             "/api/v1/orders",
-            json={"address_id": str(address.id), "items": [{"sku_id": "00000000-0000-0000-0000-000000000010", "quantity": 1}]},
+            json={
+                "address_id": str(address.id),
+                "payment_method_id": str(payment_method_id),
+                "items": [{"sku_id": "00000000-0000-0000-0000-000000000010", "quantity": 1}]
+            },
             headers={"Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())},
         )
 
@@ -108,14 +122,20 @@ async def test_checkout_happy_path_returns_201_with_full_order(client: AsyncClie
 async def test_checkout_address_response_matches_contract(client: AsyncClient, db_session: AsyncSession):
     """Адрес в ответе — объект AddressResponse с id, created_at, country, postal_code."""
     buyer, address, token = await create_buyer_with_address(db_session)
+    payment_method_id = uuid.uuid4()
 
     with (
-        patch("app.services.b2b_client.get_product_by_sku", AsyncMock(return_value=MOCK_PRODUCT)),
+        patch("app.services.b2b_client.get_sku_public", AsyncMock(return_value=MOCK_SKU)),
+        patch("app.services.b2b_client.get_product", AsyncMock(return_value=MOCK_PRODUCT)),
         patch("app.services.b2b_client.reserve", AsyncMock(return_value=MOCK_RESERVE_OK)),
     ):
         r = await client.post(
             "/api/v1/orders",
-            json={"address_id": str(address.id), "items": [{"sku_id": "00000000-0000-0000-0000-000000000010", "quantity": 1}]},
+            json={
+                "address_id": str(address.id),
+                "payment_method_id": str(payment_method_id),
+                "items": [{"sku_id": "00000000-0000-0000-0000-000000000010", "quantity": 1}]
+            },
             headers={"Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())},
         )
 
@@ -123,9 +143,9 @@ async def test_checkout_address_response_matches_contract(client: AsyncClient, d
     addr = r.json()["address"]
 
     # Обязательные поля AddressResponse
-    assert "id" in addr,         "address.id отсутствует"
+    assert "id" in addr, "address.id отсутствует"
     assert "created_at" in addr, "address.created_at отсутствует"
-    assert "country" in addr,    "address.country отсутствует (обязательное)"
+    assert "country" in addr, "address.country отсутствует (обязательное)"
     assert "city" in addr
     assert "street" in addr
     assert "building" in addr
@@ -143,14 +163,20 @@ async def test_idempotent_repeat_returns_201_with_full_order(client: AsyncClient
     """Повторный запрос с тем же Idempotency-Key возвращает 201 и полный OrderResponse."""
     buyer, address, token = await create_buyer_with_address(db_session)
     idem_key = str(uuid.uuid4())
+    payment_method_id = uuid.uuid4()
 
     with (
-        patch("app.services.b2b_client.get_product_by_sku", AsyncMock(return_value=MOCK_PRODUCT)),
+        patch("app.services.b2b_client.get_sku_public", AsyncMock(return_value=MOCK_SKU)),
+        patch("app.services.b2b_client.get_product", AsyncMock(return_value=MOCK_PRODUCT)),
         patch("app.services.b2b_client.reserve", AsyncMock(return_value=MOCK_RESERVE_OK)),
     ):
         r1 = await client.post(
             "/api/v1/orders",
-            json={"address_id": str(address.id), "items": [{"sku_id": "00000000-0000-0000-0000-000000000010", "quantity": 1}]},
+            json={
+                "address_id": str(address.id),
+                "payment_method_id": str(payment_method_id),
+                "items": [{"sku_id": "00000000-0000-0000-0000-000000000010", "quantity": 1}]
+            },
             headers={"Authorization": f"Bearer {token}", "Idempotency-Key": idem_key},
         )
         assert r1.status_code == 201
@@ -158,7 +184,11 @@ async def test_idempotent_repeat_returns_201_with_full_order(client: AsyncClient
         # Повтор — reserve не должен вызываться второй раз
         r2 = await client.post(
             "/api/v1/orders",
-            json={"address_id": str(address.id), "items": [{"sku_id": "00000000-0000-0000-0000-000000000010", "quantity": 1}]},
+            json={
+                "address_id": str(address.id),
+                "payment_method_id": str(payment_method_id),
+                "items": [{"sku_id": "00000000-0000-0000-0000-000000000010", "quantity": 1}]
+            },
             headers={"Authorization": f"Bearer {token}", "Idempotency-Key": idem_key},
         )
 
@@ -166,11 +196,11 @@ async def test_idempotent_repeat_returns_201_with_full_order(client: AsyncClient
 
     data = r2.json()
     # Полный набор обязательных полей — не усечённый {id, number, status}
-    assert "buyer_id" in data,   "buyer_id отсутствует в идемпотентном ответе"
-    assert "items" in data,      "items отсутствует в идемпотентном ответе"
-    assert "subtotal" in data,   "subtotal отсутствует в идемпотентном ответе"
-    assert "total" in data,      "total отсутствует в идемпотентном ответе"
-    assert "address" in data,    "address отсутствует в идемпотентном ответе"
+    assert "buyer_id" in data, "buyer_id отсутствует в идемпотентном ответе"
+    assert "items" in data, "items отсутствует в идемпотентном ответе"
+    assert "subtotal" in data, "subtotal отсутствует в идемпотентном ответе"
+    assert "total" in data, "total отсутствует в идемпотентном ответе"
+    assert "address" in data, "address отсутствует в идемпотентном ответе"
     assert "created_at" in data, "created_at отсутствует в идемпотентном ответе"
 
     # id заказа совпадает с первым ответом
@@ -181,14 +211,20 @@ async def test_idempotent_repeat_returns_201_with_full_order(client: AsyncClient
 async def test_reserve_conflict_returns_409_with_failed_items(client: AsyncClient, db_session: AsyncSession):
     """Нехватка остатков → 409 RESERVE_FAILED с failed_items."""
     buyer, address, token = await create_buyer_with_address(db_session)
+    payment_method_id = uuid.uuid4()
 
     with (
-        patch("app.services.b2b_client.get_product_by_sku", AsyncMock(return_value=MOCK_PRODUCT)),
+        patch("app.services.b2b_client.get_sku_public", AsyncMock(return_value=MOCK_SKU)),
+        patch("app.services.b2b_client.get_product", AsyncMock(return_value=MOCK_PRODUCT)),
         patch("app.services.b2b_client.reserve", AsyncMock(return_value=MOCK_RESERVE_409)),
     ):
         r = await client.post(
             "/api/v1/orders",
-            json={"address_id": str(address.id), "items": [{"sku_id": "00000000-0000-0000-0000-000000000010", "quantity": 2}]},
+            json={
+                "address_id": str(address.id),
+                "payment_method_id": str(payment_method_id),
+                "items": [{"sku_id": "00000000-0000-0000-0000-000000000010", "quantity": 2}]
+            },
             headers={"Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())},
         )
 
@@ -202,19 +238,43 @@ async def test_reserve_conflict_returns_409_with_failed_items(client: AsyncClien
 async def test_b2b_unavailable_returns_503(client: AsyncClient, db_session: AsyncSession):
     """B2B недоступен → 503 B2B_UNAVAILABLE."""
     buyer, address, token = await create_buyer_with_address(db_session)
+    payment_method_id = uuid.uuid4()
 
     with (
-        patch("app.services.b2b_client.get_product_by_sku", AsyncMock(return_value=MOCK_PRODUCT)),
+        patch("app.services.b2b_client.get_sku_public", AsyncMock(return_value=MOCK_SKU)),
+        patch("app.services.b2b_client.get_product", AsyncMock(return_value=MOCK_PRODUCT)),
         patch("app.services.b2b_client.reserve", AsyncMock(return_value=MOCK_RESERVE_503)),
     ):
         r = await client.post(
             "/api/v1/orders",
-            json={"address_id": str(address.id), "items": [{"sku_id": "00000000-0000-0000-0000-000000000010", "quantity": 1}]},
+            json={
+                "address_id": str(address.id),
+                "payment_method_id": str(payment_method_id),
+                "items": [{"sku_id": "00000000-0000-0000-0000-000000000010", "quantity": 1}]
+            },
             headers={"Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())},
         )
 
     assert r.status_code == 503
     assert r.json()["code"] == "B2B_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_payment_method_required(client: AsyncClient, db_session: AsyncSession):
+    """Проверяем, что payment_method_id обязателен."""
+    buyer, address, token = await create_buyer_with_address(db_session)
+
+    r = await client.post(
+        "/api/v1/orders",
+        json={
+            "address_id": str(address.id),
+            "items": [{"sku_id": "00000000-0000-0000-0000-000000000010", "quantity": 1}]
+            # payment_method_id отсутствует
+        },
+        headers={"Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())},
+    )
+
+    assert r.status_code == 422  # Validation error
 
 
 # ─── US-ORD-02: Просмотр заказов ─────────────────────────────────────────────
@@ -242,7 +302,8 @@ async def test_other_user_order_returns_404_not_403(client: AsyncClient, db_sess
         buyer_id=buyer2.id,
         idempotency_key=uuid.uuid4(),
         status=OrderStatus.PAID,
-        address_snapshot={"id": str(uuid.uuid4()), "created_at": "2024-01-01T00:00:00", "country": "", "city": "Moscow", "street": "Test", "building": "1", "postal_code": "101000", "is_default": False},
+        address_snapshot={"id": str(uuid.uuid4()), "created_at": "2024-01-01T00:00:00", "country": "", "city": "Moscow",
+                          "street": "Test", "building": "1", "postal_code": "101000", "is_default": False},
         subtotal=1000,
         total=1000,
     )
@@ -409,5 +470,57 @@ async def test_other_user_cancel_returns_404(client: AsyncClient, db_session: As
         f"/api/v1/orders/{order.id}/cancel",
         json={"reason": "hack attempt"},
         headers={"Authorization": f"Bearer {token1}"},
+    )
+    assert r.status_code == 404
+
+
+# ─── US-ORD-04: События от B2B ─────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_event_sku_out_of_stock_updates_cart(client: AsyncClient, db_session: AsyncSession):
+    """Событие SKU_OUT_OF_STOCK помечает позиции в корзине как недоступные."""
+    from app.models import Cart, CartItem
+
+    buyer, address, token = await create_buyer_with_address(db_session)
+
+    # Создаём корзину с товаром
+    cart = Cart(buyer_id=buyer.id)
+    db_session.add(cart)
+    await db_session.flush()
+
+    sku_id = uuid.uuid4()
+    cart_item = CartItem(cart_id=cart.id, sku_id=sku_id, quantity=1)
+    db_session.add(cart_item)
+    await db_session.flush()
+
+    # Отправляем событие о нехватке
+    event_body = {
+        "idempotency_key": str(uuid.uuid4()),
+        "event_type": "SKU_OUT_OF_STOCK",
+        "product_id": str(uuid.uuid4()),
+        "sku_ids": [str(sku_id)]
+    }
+
+    # Используем сервисный ключ для аутентификации
+    r = await client.post(
+        "/api/v1/b2b/events",
+        json=event_body,
+        headers={"X-Service-Key": settings.service_key}
+    )
+
+    assert r.status_code == 202
+
+    # Проверяем, что корзина обновлена
+    await db_session.refresh(cart_item)
+    assert cart_item.unavailable_reason == "SKU_OUT_OF_STOCK"
+
+
+@pytest.mark.asyncio
+async def test_event_wrong_path_returns_404(client: AsyncClient):
+    """Старый путь /events/product больше не работает."""
+    r = await client.post(
+        "/api/v1/events/product",
+        json={"idempotency_key": str(uuid.uuid4()), "event_type": "SKU_OUT_OF_STOCK", "sku_ids": []},
+        headers={"X-Service-Key": settings.service_key}
     )
     assert r.status_code == 404
